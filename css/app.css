@@ -217,6 +217,20 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .barra-fila .v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 .barra-fila:hover .valor { background: var(--navy); }
 
+/* ---------- Turnos ---------- */
+.reglas-caja { background: var(--azul-claro); color: var(--navy); border-radius: var(--r-m); padding: 10px 14px; font-size: .92rem; margin-bottom: 12px; }
+.reglas-caja .tenue { color: var(--tinta-2); }
+.fc .fc-timegrid-slot { height: 6.2em; }
+.fc .fc-timegrid-slot-label { vertical-align: top; }
+.turno-label { display: grid; line-height: 1.2; padding: 4px 2px; font-variant-numeric: tabular-nums; text-align: right; }
+.turno-label b { font-size: .8rem; color: var(--navy); text-transform: capitalize; }
+.turno-label span { font-size: .78rem; color: var(--tinta-3); }
+.fc .dia-pasado { background: repeating-linear-gradient(135deg, #F7F9FC 0 6px, #EEF2F7 6px 12px); }
+.fc .fc-highlight { background: rgba(224, 82, 74, .22); }
+.fc .fc-timegrid-slot-lane { cursor: pointer; }
+.fc .fc-timegrid-slot-lane:hover { background: rgba(31, 90, 166, .05); }
+.lt-pista .reja.turno { border-left: 2px solid var(--linea-2); }
+
 /* ---------- Observaciones ---------- */
 .obs-item { border: 1px solid var(--linea); border-left: 4px solid var(--ambar); border-radius: var(--r-m); padding: 12px 14px; display: grid; gap: 6px; }
 .obs-item.resuelta { border-left-color: var(--verde); }
@@ -268,7 +282,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .fc .fc-button { border-radius: 999px !important; font-weight: 600; padding: .35rem .8rem; box-shadow: none !important; text-transform: capitalize; }
 .fc .fc-button-group > .fc-button { margin: 0 2px; }
 .fc .fc-col-header-cell-cushion { text-transform: capitalize; color: var(--tinta-2); font-weight: 600; padding: 8px 4px; text-decoration: none; }
-.fc .fc-timegrid-slot { height: 2.1em; }
 .fc .fc-timegrid-slot-label-cushion { color: var(--tinta-3); font-variant-numeric: tabular-nums; }
 .fc .fc-non-business { background: repeating-linear-gradient(135deg, #F7F9FC 0 6px, #EEF2F7 6px 12px); }
 .fc-event.ev-otro { background: var(--azul); border-color: var(--azul); }
