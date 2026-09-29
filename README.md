@@ -67,11 +67,16 @@ El QR cambia cada minuto y cada código sirve durante unos 5 minutos, así que u
 
 ## Uso diario
 
-- **Reservar:** menú *Reservar* → elegir equipo (los de prioridad alta aparecen primero) → arrastrar sobre el calendario el bloque de horas → escribir el uso → *Reservar*. En el celular: mantener presionado y deslizar, o usar el botón *Nueva reserva*.
-- **Choques:** si el horario ya está ocupado, la app lo rechaza y muestra quién lo tiene. La base de datos lo impide incluso si dos personas reservan en el mismo segundo.
-- **Reglas que se validan:** horario del equipo (08:00–21:30), duración máxima (4 h), que el equipo esté *Disponible*, que el usuario pertenezca al laboratorio del equipo (los equipos sin laboratorio son compartidos), y que no sea un horario pasado.
+- **Reservar por turnos:** cada día tiene 3 turnos: mañana (08:00–12:30), tarde (12:30–17:00) y noche (17:00–21:30). Menú *Reservar* → elegir equipo → tocar un turno libre del calendario (o *Nueva reserva*) → escribir el uso → *Reservar*.
+- **Semana habilitada:** solo la semana en curso, de domingo a sábado. El domingo siguiente se abre la nueva semana.
+- **Cupos:**
+  - Reservando un **domingo** (día de planificación): hasta 3 turnos de un mismo equipo en la semana, máximo 2 por día, y hasta 3 equipos en un mismo turno.
+  - Reservando de **lunes a sábado**: 1 turno por equipo al día y hasta 2 equipos en un mismo turno. El tope de 3 turnos por equipo en la semana se mantiene.
+  - El administrador no tiene cupos. Los números se cambian en la tabla `reglas_reserva` de Supabase, y los horarios de los turnos en la tabla `turnos`.
+- **Choques:** si el turno ya está ocupado, la app lo rechaza y muestra quién lo tiene. La base de datos lo impide incluso si dos personas reservan en el mismo segundo.
+- **Observaciones:** menú *Observaciones* → elegir equipo (o *General*) → describir el problema. El administrador las marca como resueltas.
 - **Asistencia:** escanear el QR con la cámara del celular. La primera marca del día es la entrada; la siguiente, la salida.
-- **Reporte:** *Administración → Reporte de asistencia* → elegir fechas → *Descargar Excel*.
+- **Reporte:** *Administración → Reporte de asistencia* → elegir fechas → *Descargar Excel* (incluye las hojas Asistencia y Observaciones).
 
 ## Administración
 
