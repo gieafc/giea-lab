@@ -217,6 +217,22 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .barra-fila .v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 .barra-fila:hover .valor { background: var(--navy); }
 
+/* ---------- Observaciones ---------- */
+.obs-item { border: 1px solid var(--linea); border-left: 4px solid var(--ambar); border-radius: var(--r-m); padding: 12px 14px; display: grid; gap: 6px; }
+.obs-item.resuelta { border-left-color: var(--verde); }
+.obs-item .t { font-weight: 700; }
+.obs-item .texto { overflow-wrap: anywhere; white-space: pre-line; }
+.obs-item .s { font-size: .88rem; }
+.obs-item .resolucion { display: flex; gap: 6px; align-items: flex-start; font-size: .9rem; color: var(--verde); background: var(--verde-claro); border-radius: var(--r-s); padding: 6px 10px; }
+.obs-item .resolucion svg { width: 16px; height: 16px; flex: none; margin-top: 2px; }
+.acciones-obs:empty { display: none; }
+.obs-caja { background: var(--ambar-claro); color: #5E3E00; border-radius: var(--r-m); padding: 10px 14px; margin-bottom: 12px; display: grid; gap: 4px; font-size: .92rem; }
+.obs-caja b { display: inline-flex; align-items: center; gap: 6px; }
+.obs-caja svg { width: 16px; height: 16px; }
+.obs-caja p { overflow-wrap: anywhere; }
+.obs-aviso { display: inline-flex; align-items: center; gap: 2px; color: var(--ambar); font-weight: 700; text-decoration: none; }
+.obs-aviso svg { width: 13px; height: 13px; }
+
 /* ---------- Estado de asistencia ---------- */
 .estado-hoy { display: flex; align-items: center; gap: 14px; }
 .estado-hoy .icono { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; background: var(--verde-claro); color: var(--verde); flex: none; }
@@ -333,6 +349,7 @@ table.tabla { width: 100%; border-collapse: collapse; font-size: .93rem; }
 .barra-movil { display: none; }
 
 @media (max-width: 1100px) {
+  .obs-form { order: -1; }
   .tres { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .panel-rejilla { grid-template-columns: 1fr; }
   .panel-rejilla .rail { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
