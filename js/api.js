@@ -21,6 +21,10 @@
     min(t) { const [h, m] = U.hm(t).split(':').map(Number); return h * 60 + m; }
   };
   window.U = U;
+  const TURNOS_DEF = [
+    { numero: 1, nombre: 'Turno mañana', inicio: '08:00', fin: '12:30' },
+    { numero: 2, nombre: 'Turno tarde', inicio: '12:30', fin: '17:00' },
+    { numero: 3, nombre: 'Turno noche', inicio: '17:00', fin: '21:30' }];
 
   /* =========================================================
      SUPABASE
@@ -38,7 +42,7 @@
       if (/banned/i.test(m)) return 'Su usuario está desactivado. Consulte con el administrador.';
       if (/should be different/i.test(m)) return 'El nuevo PIN debe ser distinto del actual.';
       if (/Failed to fetch|NetworkError|network/i.test(m)) return 'No hay conexión con el servidor. Revise su internet e intente de nuevo.';
-      if (e && e.code === '23P01' && !/Horario ocupado/.test(m)) return 'Otra persona acaba de reservar ese horario. Elija otro bloque.';
+      if (e && e.code === '23P01' && !/Horario ocupado|Turno ocupado|ya tiene reservado/.test(m)) return 'Otra persona acaba de reservar ese horario. Elija otro bloque.';
       if (/observaciones/i.test(m) && /schema cache|does not exist/i.test(m)) return 'Falta instalar la sección de Observaciones: ejecute actualizacion_observaciones.sql en Supabase.';
       if (/check constraint "observaciones_texto/i.test(m)) return 'Escriba la observación (mínimo 5 caracteres).';
       if (/row-level security|permission denied/i.test(m)) return 'No tiene permiso para esta acción.';
@@ -114,6 +118,14 @@
       async guardarLaboratorio(l) {
         return ok(await sb.from('laboratorios').upsert(l, { onConflict: 'codigo' }).select().single());
       },
+      async turnos() {
+        const r = await sb.from('turnos').select('*').order('numero');
+        return !r.error && r.data.length ? r.data.map(t => ({ ...t, inicio: U.hm(t.inicio), fin: U.hm(t.fin) })) : TURNOS_DEF;
+      },
+      async reglas() {
+        const r = await sb.from('reglas_reserva').select('clave, valor');
+        return r.error ? {} : Object.fromEntries(r.data.map(x => [x.clave, x.valor]));
+      },
       async observaciones(desde, hasta) {
         let q = sb.from('observaciones_detalle').select('*').order('creado', { ascending: false }).limit(1000);
         if (desde) q = q.gte('creado', desde.toISOString());
@@ -165,25 +177,41 @@
                usuario_codigo: p.codigo, usuario_nombre: p.nombre, supervisor: p.supervisor };
     };
 
-    function validar(r, id) {
+    const turnos = TURNOS_DEF.map(t => ({ ...t }));
+    const RG = { max_turnos_equipo_semana: 3, dom_max_turnos_equipo_dia: 2, dom_max_equipos_turno: 3, sem_max_turnos_equipo_dia: 1, sem_max_equipos_turno: 2 };
+    function validar(r, id, cambia) {
       const e = equipos.find(x => x.id === r.equipo_id), p = perfiles.find(x => x.id === r.usuario_id);
       if (!e) error('El equipo seleccionado no existe.');
       if (!p || !p.activo || p.rol === 'kiosco') error('Su usuario no está habilitado para reservar.');
-      if (e.estado !== 'Disponible') error(`El equipo "${e.nombre}" no se puede reservar: está en ${e.estado.toLowerCase()}.`);
+      if (cambia && e.estado !== 'Disponible') error(`El equipo "${e.nombre}" no se puede reservar: está en ${e.estado.toLowerCase()}.`);
       if (e.laboratorio && p.laboratorio !== 'AMBOS' && p.laboratorio !== e.laboratorio && !esAdmin())
         error(`El equipo "${e.nombre}" pertenece a ${e.laboratorio} y usted está registrado en ${p.laboratorio}.`);
       const ini = new Date(r.inicio), fin = new Date(r.fin);
       if (fin <= ini) error('La hora de fin debe ser posterior a la de inicio.');
-      if (U.fechaLima(ini) !== U.fechaLima(new Date(fin - 1000))) error('La reserva debe empezar y terminar el mismo día.');
-      const hi = U.horaLima(ini), hf = U.horaLima(fin);
-      if (hi < U.hm(e.hora_inicio) || hf > U.hm(e.hora_fin) || hf === '00:00')
-        error(`El equipo "${e.nombre}" solo se puede reservar de ${U.hm(e.hora_inicio)} a ${U.hm(e.hora_fin)}.`);
-      if (e.duracion_max_h && (fin - ini) > e.duracion_max_h * 3600e3)
-        error(`La reserva excede la duración máxima de ${e.duracion_max_h} h para "${e.nombre}".`);
-      if (r._nuevoInicio && ini < Date.now() - 600e3 && !esAdmin()) error('No se puede reservar en un horario que ya pasó.');
+      if (!cambia) return;
+      const f = U.fechaLima(ini);
+      const t = turnos.find(x => x.inicio === U.horaLima(ini) && x.fin === U.horaLima(fin) && U.fechaLima(fin) === f);
+      if (!t) error('Las reservas son por turno completo: ' + turnos.map(x => x.inicio + '–' + x.fin).join(', ') + '.');
+      if (t.inicio < U.hm(e.hora_inicio) || t.fin > U.hm(e.hora_fin)) error(`El equipo "${e.nombre}" solo se puede reservar de ${U.hm(e.hora_inicio)} a ${U.hm(e.hora_fin)}.`);
+      if (!esAdmin()) {
+        const hoy = U.fechaLima(), dow = new Date(hoy + 'T12:00:00Z').getUTCDay(), dom = U.sumarDias(hoy, -dow), sab = U.sumarDias(dom, 6), esDom = dow === 0;
+        const dm = x => x.split('-').reverse().slice(0, 2).join('/');
+        if (f < dom || f > sab) error(`Solo se puede reservar dentro de la semana actual: del domingo ${dm(dom)} al sábado ${dm(sab)}.`);
+        if (fin <= new Date()) error('Ese turno ya terminó.');
+        const mias = reservas.filter(x => x.usuario_id === p.id && x.id !== id);
+        const deEq = mias.filter(x => x.equipo_id === e.id && U.fechaLima(new Date(x.inicio)) >= dom && U.fechaLima(new Date(x.inicio)) <= sab);
+        if (deEq.length >= RG.max_turnos_equipo_semana) error(`Ya tiene ${deEq.length} turno(s) de "${e.nombre}" esta semana. El máximo es ${RG.max_turnos_equipo_semana} por equipo.`);
+        const limDia = esDom ? RG.dom_max_turnos_equipo_dia : RG.sem_max_turnos_equipo_dia;
+        const nDia = deEq.filter(x => U.fechaLima(new Date(x.inicio)) === f).length;
+        if (nDia >= limDia) error(`Ya tiene ${nDia} turno(s) de "${e.nombre}" el ${dm(f)}. ` + (esDom ? `El máximo es ${limDia} por día.` : `De lunes a sábado solo se puede reservar ${limDia} turno por equipo al día (los domingos, más).`));
+        const limT = esDom ? RG.dom_max_equipos_turno : RG.sem_max_equipos_turno;
+        const nT = new Set(mias.filter(x => x.equipo_id !== e.id && new Date(x.inicio) < fin && new Date(x.fin) > ini).map(x => x.equipo_id)).size;
+        if (nT >= limT) error(`Ya tiene ${nT} equipo(s) reservados en ese turno. ` + (esDom ? `El máximo es ${limT} equipos por turno.` : `De lunes a sábado el máximo es ${limT} equipos por turno (los domingos, más).`));
+      }
       const c = reservas.find(x => x.id !== id && x.equipo_id === r.equipo_id && new Date(x.inicio) < fin && new Date(x.fin) > ini);
+      if (c && c.usuario_id === p.id) error(`Usted ya tiene reservado "${e.nombre}" en ese turno.`);
       if (c) { const q = perfiles.find(x => x.id === c.usuario_id);
-        error(`Horario ocupado: ${q.nombre}${q.supervisor ? ' (' + q.supervisor + ')' : ''} tiene "${e.nombre}" reservado de ${U.horaLima(c.inicio)} a ${U.horaLima(c.fin)}.`); }
+        error(`Turno ocupado: ${q.nombre}${q.supervisor ? ' (' + q.supervisor + ')' : ''} ya reservó "${e.nombre}" de ${U.horaLima(c.inicio)} a ${U.horaLima(c.fin)}.`); }
     }
 
     // Reservas de ejemplo para hoy y los próximos días
@@ -192,18 +220,20 @@
       const usos = ['Voltametría cíclica de muestras', 'Impedancia (EIS) de recubrimientos', 'Curvas de carga-descarga',
         'Espectros de absorción', 'Caracterización de electrodos', 'Medición de corrosión', 'Calibración del equipo'];
       let k = 0;
-      for (let d = -1; d <= 5; d++) {
-        const f = U.sumarDias(U.fechaLima(), d);
+      const hoy = U.fechaLima(), dom = U.sumarDias(hoy, -new Date(hoy + 'T12:00:00Z').getUTCDay());
+      const usadas = {};
+      for (let d = -7; d <= 6; d++) {
+        const f = U.sumarDias(dom, d);
         equipos.forEach((e, i) => {
-          if ((i + d + 7) % 3 === 2) return;
-          const bloques = [[8 + (i % 3), 2 + (i % 2)], [13 + (i % 2), 2], [17, 1 + (i % 3)]];
-          bloques.forEach(([h, dur], j) => {
-            if ((i + j + d) % 4 === 3) return;
-            const us = usuarios.filter(u => !e.laboratorio || u.laboratorio === 'AMBOS' || u.laboratorio === e.laboratorio);
+          turnos.forEach((t, j) => {
+            if ((i * 3 + j + d * 2 + 14) % 5 > 1) return;
+            const us = usuarios.filter(u => u.rol !== 'admin' && (!e.laboratorio || u.laboratorio === 'AMBOS' || u.laboratorio === e.laboratorio));
             const u = us[(k++) % us.length]; if (!u) return;
-            const ini = U.enLima(f, String(h).padStart(2, '0') + ':' + (j === 1 ? '30' : '00'));
+            const clave = u.id + ':' + e.id + ':' + (d < 0 ? 'a' : 'b');
+            if (usadas[clave]) return; usadas[clave] = 1;
+            const ini = U.enLima(f, t.inicio);
             reservas.push({ id: ++seq, equipo_id: e.id, usuario_id: u.id, inicio: ini.toISOString(),
-              fin: new Date(ini.getTime() + dur * 3600e3).toISOString(), uso: usos[k % usos.length], creado: new Date().toISOString() });
+              fin: U.enLima(f, t.fin).toISOString(), uso: usos[k % usos.length], creado: new Date().toISOString() });
           });
         });
       }
@@ -257,7 +287,7 @@
         if (!yo || !['usuario', 'admin'].includes(yo.rol)) error('No tiene permiso para esta acción.');
         if (!r.uso || r.uso.trim().length < 5) error('Describa el uso del equipo (mínimo 5 caracteres).');
         const n = { equipo_id: r.equipo_id, usuario_id: yo.id, inicio: r.inicio.toISOString(), fin: r.fin.toISOString(), uso: r.uso.trim() };
-        validar({ ...n, _nuevoInicio: true }, null);
+        validar(n, null, true);
         n.id = ++seq; n.creado = new Date().toISOString(); reservas.push(n); return espera(n);
       },
       async actualizarReserva(id, r) {
@@ -266,7 +296,7 @@
         const n = { ...x, ...(r.inicio && { inicio: r.inicio.toISOString() }), ...(r.fin && { fin: r.fin.toISOString() }),
           ...(r.uso !== undefined && { uso: r.uso.trim() }), ...(r.equipo_id && { equipo_id: r.equipo_id }) };
         if (n.uso.length < 5) error('Describa el uso del equipo (mínimo 5 caracteres).');
-        validar({ ...n, _nuevoInicio: n.inicio !== x.inicio }, id);
+        validar(n, id, n.inicio !== x.inicio || n.fin !== x.fin || n.equipo_id !== x.equipo_id);
         Object.assign(x, n); return espera(x);
       },
       async cancelarReserva(id) {
@@ -343,6 +373,8 @@
         if (!esAdmin()) error('No tiene permiso para esta acción.');
         let x = labs.find(z => z.codigo === l.codigo); if (!x) { x = {}; labs.push(x); } Object.assign(x, l); return espera({ ...x });
       },
+      async turnos() { return espera(turnos.map(t => ({ ...t }))); },
+      async reglas() { return espera({ ...RG }); },
       async observaciones(desde, hasta) {
         return espera(observaciones.filter(o => (!desde || new Date(o.creado) >= desde) && (!hasta || new Date(o.creado) < hasta))
           .sort((a, b) => b.creado.localeCompare(a.creado)).map(detalleObs));

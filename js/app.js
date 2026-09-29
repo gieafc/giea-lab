@@ -98,7 +98,7 @@
   window.addEventListener('hashchange', () => render());
 
   async function cargarCatalogos() {
-    [S.labs, S.equipos, S.perfiles] = await Promise.all([API.laboratorios(), API.equipos(), API.perfiles()]);
+    [S.labs, S.equipos, S.perfiles, S.turnos, S.reglas] = await Promise.all([API.laboratorios(), API.equipos(), API.perfiles(), API.turnos(), API.reglas()]);
   }
 
   async function render() {
@@ -341,6 +341,7 @@
             <div class="txt"><div class="n" title="${esc(e.nombre)}">${esc(e.nombre)}</div><div class="c">${esc(e.codigo)} · ${esc(e.laboratorio ? e.laboratorio : 'Compartido')}${(() => { const n = (S.obsPend || []).filter(o => o.equipo_id === e.id).length; return n ? ` · <a class="obs-aviso" href="#/observaciones?equipo=${e.id}" title="${n} observación(es) pendiente(s)">${ic('alerta')}${n}</a>` : ''; })()}</div></div></div>
           <div class="lt-pista ${e.estado !== 'Disponible' ? 'bloqueada' : ''}" data-eq="${e.id}" data-estado="${esc(e.estado !== 'Disponible' ? e.estado : '')}" ${bloqueada ? 'data-bloq="' + esc(motivo) + '"' : ''}>
             ${horas.slice(1, -1).map(m => `<span class="reja" style="left:${pct(m)}"></span>`).join('')}
+            ${S.turnos.slice(1).map(t => `<span class="reja turno" style="left:${pct(U.min(t.inicio))}"></span>`).join('')}
             <span class="reja" style="left:${pct(U.min(e.hora_inicio))};border-left:0;width:0"></span>
             ${rs.map(x => {
               const a = Math.max(U.min(U.horaLima(x.inicio)), ini), b = Math.min(U.min(U.horaLima(x.fin)) || 1440, fin);
@@ -359,11 +360,12 @@
     caja.querySelectorAll('.lt-pista').forEach(p => p.addEventListener('click', ev => {
       if (p.dataset.bloq) { aviso(`No puede reservar este equipo: ${p.dataset.bloq}.`); return; }
       const r = p.getBoundingClientRect();
-      let m = ini + (ev.clientX - r.left) / r.width * span;
-      m = Math.floor(m / 30) * 30;
-      const h = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+      const m = ini + (ev.clientX - r.left) / r.width * span;
+      const t = turnoEnMinuto(m);
       const e = S.equipos.find(x => x.id == p.dataset.eq);
-      nuevaReserva(e, fecha, h, () => render());
+      const sm = semanaActual();
+      if (S.yo.rol !== 'admin' && (fecha < sm.hoy || fecha > sm.sab)) { aviso(`Solo se puede reservar en la semana actual (hasta el ${diaNombre(sm.sab).toLowerCase()}).`); return; }
+      nuevaReserva(e, fecha, t && t.numero, () => render());
     }));
   }
 
@@ -415,27 +417,65 @@
     tarjeta.querySelector('.vacio').replaceWith(cont);
   }
 
-  /* ================= RESERVAS: detalle / crear / editar ================= */
-  function opcionesHora(e, desde = e.hora_inicio, hasta = e.hora_fin) {
-    const out = []; for (let m = U.min(desde); m <= U.min(hasta); m += 30) out.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
-    return out;
+  /* ================= TURNOS Y CUPOS ================= */
+  const REGLAS_DEF = { max_turnos_equipo_semana: 3, dom_max_turnos_equipo_dia: 2, dom_max_equipos_turno: 3, sem_max_turnos_equipo_dia: 1, sem_max_equipos_turno: 2 };
+  function semanaActual() {
+    const hoy = U.fechaLima(), dow = new Date(hoy + 'T12:00:00Z').getUTCDay(), dom = U.sumarDias(hoy, -dow);
+    return { hoy, dow, dom, sab: U.sumarDias(dom, 6), esDomingo: dow === 0, dias: [0, 1, 2, 3, 4, 5, 6].map(i => U.sumarDias(dom, i)) };
+  }
+  const R = k => (S.reglas && S.reglas[k] != null ? S.reglas[k] : REGLAS_DEF[k]);
+  const turnoDe = (ini, fin) => S.turnos.find(t => U.hm(t.inicio) === U.horaLima(ini) && U.hm(t.fin) === U.horaLima(fin));
+  const turnoEnMinuto = m => S.turnos.find(t => m >= U.min(t.inicio) && m < U.min(t.fin));
+  const nombreTurno = t => `${t.nombre} (${U.hm(t.inicio)}–${U.hm(t.fin)})`;
+  const diaNombre = f => may(fmt(U.enLima(f, '12:00'), { weekday: 'long', day: 'numeric', month: 'short' }).replace('.', ''));
+
+  // Revisión en el navegador (la base de datos vuelve a validar todo)
+  function revisarCupos(mias, eq, fecha, t, excluirId) {
+    if (S.yo.rol === 'admin') return null;
+    const s = semanaActual(), dom = s.esDomingo;
+    const otras = mias.filter(x => x.id !== excluirId);
+    const deEq = otras.filter(x => x.equipo_id === eq.id && U.fechaLima(new Date(x.inicio)) >= s.dom && U.fechaLima(new Date(x.inicio)) <= s.sab);
+    const limSem = R('max_turnos_equipo_semana');
+    if (deEq.length >= limSem) return `Ya tiene ${deEq.length} turno(s) de "${eq.nombre}" esta semana. El máximo es ${limSem} por equipo.`;
+    const limDia = R(dom ? 'dom_max_turnos_equipo_dia' : 'sem_max_turnos_equipo_dia');
+    const nDia = deEq.filter(x => U.fechaLima(new Date(x.inicio)) === fecha).length;
+    if (nDia >= limDia) return dom ? `Ya tiene ${nDia} turno(s) de "${eq.nombre}" ese día. El máximo es ${limDia} por día.`
+      : `De lunes a sábado solo se puede reservar ${limDia} turno por equipo al día, y ya tiene "${eq.nombre}" ese día.`;
+    const ini = U.enLima(fecha, U.hm(t.inicio)), fin = U.enLima(fecha, U.hm(t.fin));
+    const enTurno = new Set(otras.filter(x => x.equipo_id !== eq.id && new Date(x.inicio) < fin && new Date(x.fin) > ini).map(x => x.equipo_id)).size;
+    const limTurno = R(dom ? 'dom_max_equipos_turno' : 'sem_max_equipos_turno');
+    if (enTurno >= limTurno) return `Ya tiene ${enTurno} equipo(s) en ese turno. ${dom ? `El máximo es ${limTurno}.` : `De lunes a sábado el máximo es ${limTurno} (los domingos, más).`}`;
+    return null;
   }
 
-  function nuevaReserva(e, fecha, hIni, alGuardar, hFin, existente) {
-    const tope = e.duracion_max_h ? e.duracion_max_h * 60 : 24 * 60;
-    const horas = opcionesHora(e);
-    const ini0 = hIni && horas.includes(hIni) ? hIni : horas[0];
-    const fin0 = hFin || (() => { const m = Math.min(U.min(ini0) + 60, U.min(e.hora_fin)); return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; })();
+  function textoReglas() {
+    const s = semanaActual();
+    if (S.yo.rol === 'admin') return `<b>Administrador:</b> sin límite de cupos. Las reservas siguen siendo por turno completo.`;
+    return s.esDomingo
+      ? `<b>Hoy es domingo, día de planificación.</b> Puede reservar hasta ${R('max_turnos_equipo_semana')} turnos de un mismo equipo en la semana, máximo ${R('dom_max_turnos_equipo_dia')} por día, y hasta ${R('dom_max_equipos_turno')} equipos en un mismo turno.`
+      : `<b>De lunes a sábado</b> puede agregar 1 turno por equipo al día (máximo ${R('max_turnos_equipo_semana')} por equipo en la semana) y hasta ${R('sem_max_equipos_turno')} equipos en un mismo turno. <span class="tenue">El domingo, día de planificación, los cupos son mayores.</span>`;
+  }
+
+  /* ================= RESERVAS: detalle / crear / editar ================= */
+  async function nuevaReserva(e, fecha, turnoNum, alGuardar, existente) {
+    const s = semanaActual(), admin = S.yo.rol === 'admin';
     const disponibles = S.equipos.filter(x => x.estado === 'Disponible' && puedeUsar(x));
+    let semana = [];
+    try { semana = await API.reservas(U.enLima(admin ? U.sumarDias(s.dom, -7) : s.dom, '00:00'), U.enLima(U.sumarDias(s.dom, admin ? 35 : 7), '00:00')); } catch (ex) { aviso(ex.message, 'error'); }
+    const mias = semana.filter(x => x.usuario_id === S.yo.id);
+    const diasOk = s.dias.filter(d => d >= s.hoy);
+    if (!admin && (!fecha || !diasOk.includes(fecha))) fecha = diasOk[0];
     modal({
       titulo: existente ? 'Editar reserva' : 'Nueva reserva',
       cuerpo: `
+        <div class="reglas-caja">${textoReglas()}</div>
         <label class="campo"><span>Equipo</span>
           <select name="equipo">${disponibles.map(x => `<option value="${x.id}" ${x.id === e.id ? 'selected' : ''}>${esc(x.nombre)} (${esc(x.codigo)})</option>`).join('')}</select></label>
-        <div class="rejilla-3">
-          <label class="campo"><span>Fecha</span><input type="date" name="fecha" value="${fecha}" min="${U.fechaLima()}"></label>
-          <label class="campo"><span>Desde</span><select name="ini"></select></label>
-          <label class="campo"><span>Hasta</span><select name="fin"></select></label>
+        <div class="rejilla-2">
+          <label class="campo"><span>Día</span>
+            ${admin ? `<input type="date" name="fecha" value="${fecha || s.hoy}">`
+              : `<select name="fecha">${diasOk.map(d => `<option value="${d}" ${d === fecha ? 'selected' : ''}>${diaNombre(d)}</option>`).join('')}</select>`}</label>
+          <label class="campo"><span>Turno</span><select name="turno"></select></label>
         </div>
         <label class="campo"><span>Uso del equipo</span>
           <textarea name="uso" maxlength="500" placeholder="Ej.: Voltametría cíclica de muestras para la tesis">${esc(existente ? existente.uso : '')}</textarea>
@@ -445,31 +485,41 @@
         { texto: 'Cancelar', clase: 'sec' },
         { texto: existente ? 'Guardar cambios' : 'Reservar', accion: async (f) => {
           const eq = S.equipos.find(x => x.id == f.querySelector('[name=equipo]').value);
-          const fe = f.querySelector('[name=fecha]').value, a = f.querySelector('[name=ini]').value, b = f.querySelector('[name=fin]').value;
+          const fe = f.querySelector('[name=fecha]').value;
+          const t = S.turnos.find(x => x.numero == f.querySelector('[name=turno]').value);
           const uso = f.querySelector('[name=uso]').value.trim();
-          if (!fe || !a || !b) throw new Error('Complete la fecha y el horario.');
+          if (!fe || !t) throw new Error('Elija el día y el turno.');
           if (uso.length < 5) throw new Error('Describa en pocas palabras para qué usará el equipo.');
-          const datos = { equipo_id: eq.id, inicio: U.enLima(fe, a), fin: U.enLima(fe, b), uso };
+          const cambia = !existente || existente.equipo_id !== eq.id || U.fechaLima(new Date(existente.inicio)) !== fe || !turnoDe(existente.inicio, existente.fin) || turnoDe(existente.inicio, existente.fin).numero !== t.numero;
+          if (cambia) { const m = revisarCupos(mias, eq, fe, t, existente && existente.id); if (m) throw new Error(m); }
+          const datos = { equipo_id: eq.id, inicio: U.enLima(fe, U.hm(t.inicio)), fin: U.enLima(fe, U.hm(t.fin)), uso };
           if (existente) await API.actualizarReserva(existente.id, datos); else await API.crearReserva(datos);
-          aviso(existente ? 'Reserva actualizada' : `Reserva registrada: ${eq.nombre}, ${a}–${b}`, 'ok');
+          aviso(existente ? 'Reserva actualizada' : `Reserva registrada: ${eq.nombre}, ${diaNombre(fe).toLowerCase()}, ${U.hm(t.inicio)}–${U.hm(t.fin)}`, 'ok');
           alGuardar && alGuardar();
         } }
       ],
       alAbrir: (f) => {
-        const sEq = f.querySelector('[name=equipo]'), sI = f.querySelector('[name=ini]'), sF = f.querySelector('[name=fin]'), info = f.querySelector('.info-eq');
-        const llenar = (ini, fin) => {
-          const eq = S.equipos.find(x => x.id == sEq.value);
-          const hs = opcionesHora(eq), top = eq.duracion_max_h ? eq.duracion_max_h * 60 : 1440;
-          sI.innerHTML = hs.slice(0, -1).map(h => `<option ${h === ini ? 'selected' : ''}>${h}</option>`).join('');
-          if (!hs.slice(0, -1).includes(ini)) sI.selectedIndex = 0;
-          const mi = U.min(sI.value);
-          const fs = hs.filter(h => U.min(h) > mi && U.min(h) - mi <= top);
-          sF.innerHTML = fs.map(h => `<option ${h === fin ? 'selected' : ''}>${h}</option>`).join('');
-          info.textContent = `Horario del equipo: ${U.hm(eq.hora_inicio)} a ${U.hm(eq.hora_fin)}${eq.duracion_max_h ? ` · máximo ${eq.duracion_max_h} h por reserva` : ''}.`;
+        const sEq = f.querySelector('[name=equipo]'), sF = f.querySelector('[name=fecha]'), sT = f.querySelector('[name=turno]'), info = f.querySelector('.info-eq');
+        const llenar = (quiero) => {
+          const eq = S.equipos.find(x => x.id == sEq.value), fe = sF.value;
+          const ops = S.turnos.filter(t => U.min(t.inicio) >= U.min(eq.hora_inicio) && U.min(t.fin) <= U.min(eq.hora_fin)).map(t => {
+            const ini = U.enLima(fe, U.hm(t.inicio)), fin = U.enLima(fe, U.hm(t.fin));
+            const ocup = semana.find(x => x.equipo_id === eq.id && (!existente || x.id !== existente.id) && new Date(x.inicio) < fin && new Date(x.fin) > ini);
+            const paso = !admin && fin <= new Date();
+            const motivo = ocup ? ` — ocupado por ${ocup.usuario_id === S.yo.id ? 'usted' : primerNombre(ocup.usuario_nombre)}` : paso ? ' — ya terminó' : '';
+            return { t, libre: !ocup && !paso, txt: nombreTurno(t) + motivo };
+          });
+          const prefer = quiero || sT.value;
+          sT.innerHTML = ops.map(o => `<option value="${o.t.numero}" ${o.libre ? '' : 'disabled'}>${esc(o.txt)}</option>`).join('');
+          const elegido = ops.find(o => o.libre && String(o.t.numero) === String(prefer)) || ops.find(o => o.libre);
+          if (elegido) sT.value = elegido.t.numero; else sT.selectedIndex = -1;
+          const n = mias.filter(x => x.equipo_id === eq.id && (!existente || x.id !== existente.id) && U.fechaLima(new Date(x.inicio)) >= s.dom && U.fechaLima(new Date(x.inicio)) <= s.sab).length;
+          info.textContent = admin ? `Horario del equipo: ${U.hm(eq.hora_inicio)} a ${U.hm(eq.hora_fin)}.`
+            : `Esta semana usted tiene ${n} de ${R('max_turnos_equipo_semana')} turnos posibles de este equipo.${elegido ? '' : ' No quedan turnos libres ese día.'}`;
         };
-        llenar(ini0, fin0);
-        sEq.addEventListener('change', () => llenar(sI.value, sF.value));
-        sI.addEventListener('change', () => llenar(sI.value, sF.value));
+        llenar(turnoNum || (existente && turnoDe(existente.inicio, existente.fin) || {}).numero);
+        sEq.addEventListener('change', () => llenar());
+        sF.addEventListener('change', () => llenar());
         if (!existente) f.querySelector('[name=uso]').focus();
       }
     });
@@ -486,14 +536,17 @@
     } });
     if ((mia || admin) && futura) acciones.push({ texto: `${ic('editar')} Editar`, clase: 'sec', accion: () => {
       const e = S.equipos.find(q => q.id === x.equipo_id);
-      setTimeout(() => nuevaReserva(e, U.fechaLima(new Date(x.inicio)), U.horaLima(x.inicio), alCambiar, U.horaLima(x.fin), x), 0);
+      const t = turnoDe(x.inicio, x.fin);
+      setTimeout(() => nuevaReserva(e, U.fechaLima(new Date(x.inicio)), t && t.numero, alCambiar, x), 0);
     } });
-    acciones.push({ texto: 'Cerrar', clase: acciones.length ? '' : '' });
+    acciones.push({ texto: 'Cerrar' });
+    const t = turnoDe(x.inicio, x.fin);
     modal({
       titulo: x.equipo_nombre,
       cuerpo: `<div class="resumen-reserva">
           <div class="t">${fechaLarga(x.inicio)}</div>
           <div class="num" style="font-size:1.35rem;font-weight:700;color:var(--navy)">${hora(x.inicio)} – ${hora(x.fin)}</div>
+          ${t ? `<div class="tenue">${esc(t.nombre)}</div>` : ''}
         </div>
         <div><div class="tenue" style="font-size:.9rem">Reservado por</div><div style="font-weight:700">${esc(x.usuario_nombre)}${x.supervisor ? ` <span class="tenue" style="font-weight:500">(${esc(x.supervisor)})</span>` : ''}</div></div>
         <div><div class="tenue" style="font-size:.9rem">Uso</div><div style="overflow-wrap:anywhere">${esc(x.uso)}</div></div>`,
@@ -501,13 +554,14 @@
     });
   }
 
-  /* ================= RESERVAR (calendario) ================= */
+  /* ================= RESERVAR (calendario por turnos) ================= */
   function vistaReservar(r) {
     const usables = S.equipos.filter(puedeUsar);
     const sel = usables.find(e => e.id == r.q.equipo) || usables.find(e => e.estado === 'Disponible') || usables[0];
     const grupos = [1, 2, 3].map(p => [p, usables.filter(e => e.prioridad === p)]).filter(g => g[1].length);
     const titulos = { 1: 'Prioridad alta · más usados', 2: 'Prioridad media', 3: 'Prioridad baja' };
-    const v = shell('reservar', 'Reservar equipo', '', `
+    const s = semanaActual(), admin = S.yo.rol === 'admin';
+    const v = shell('reservar', 'Reservar equipo', `Semana del ${diaNombre(s.dom).toLowerCase()} al ${diaNombre(s.sab).toLowerCase()}`, `
       <div class="reservar">
         <aside class="tarjeta selector-equipos" aria-label="Equipos">
           <input type="search" placeholder="Buscar equipo…" aria-label="Buscar equipo" style="margin-bottom:12px">
@@ -522,10 +576,11 @@
             <select>${grupos.map(([p, es]) => `<optgroup label="${titulos[p]}">${es.map(e => `<option value="${e.id}" ${sel && e.id === sel.id ? 'selected' : ''} ${e.estado !== 'Disponible' ? 'disabled' : ''}>${esc(e.nombre)}${e.estado !== 'Disponible' ? ' (' + esc(e.estado) + ')' : ''}</option>`).join('')}</optgroup>`).join('')}</select></label>
           ${sel ? `<header class="cal-cabecera" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
             <div><h2>${esc(sel.nombre)}</h2>
-            <div class="datos">${esc(sel.codigo)} · ${esc(nombreLab(sel.laboratorio))} · de ${U.hm(sel.hora_inicio)} a ${U.hm(sel.hora_fin)}${sel.duracion_max_h ? ` · máx. ${sel.duracion_max_h} h` : ''}</div></div>
+            <div class="datos">${esc(sel.codigo)} · ${esc(nombreLab(sel.laboratorio))} · <span id="mi-cupo"></span></div></div>
             <button class="btn" data-nueva>${ic('mas')} Nueva reserva</button></header>
+            <div class="reglas-caja">${textoReglas()}</div>
             <div id="obs-equipo"></div>
-            <p class="tenue" style="font-size:.9rem;margin-bottom:10px">Arrastre sobre el calendario para elegir el bloque de horas${window.innerWidth < 760 ? ' (mantenga presionado y deslice)' : ''}. Sus reservas aparecen en coral y se pueden mover o estirar.</p>
+            <p class="tenue" style="font-size:.9rem;margin-bottom:10px">Toque un turno libre del calendario para reservarlo. Sus reservas aparecen en coral.</p>
             <div id="calendario"></div>` : '<div class="vacio">Seleccione un equipo.</div>'}
         </section>
       </div>`);
@@ -546,45 +601,56 @@
         : `<p class="tenue" style="font-size:.9rem;margin-bottom:8px">¿Notó algún problema con este equipo? <a href="#/observaciones?equipo=${sel.id}">Registrar una observación</a></p>`;
     }).catch(() => {});
     const disp = sel.estado === 'Disponible';
+    const refrescar = () => S.cal && S.cal.refetchEvents();
     $('[data-nueva]', v).disabled = !disp;
     $('[data-nueva]', v).addEventListener('click', () => {
-      const d = S.cal.getDate(); let f = U.fechaLima(d); if (f < U.fechaLima()) f = U.fechaLima();
-      nuevaReserva(sel, f, null, () => S.cal.refetchEvents());
+      let f = U.fechaLima(S.cal.getDate()); if (f < s.hoy) f = s.hoy;
+      nuevaReserva(sel, f, null, refrescar);
     });
 
     const movil = window.innerWidth < 760;
-    const maxMs = sel.duracion_max_h ? sel.duracion_max_h * 3600e3 : Infinity;
-    let cache = [];
+    const turnos = S.turnos.filter(t => U.min(t.inicio) >= U.min(sel.hora_inicio) && U.min(t.fin) <= U.min(sel.hora_fin));
+    if (!turnos.length) { $('#calendario', v).innerHTML = '<div class="vacio">El horario de este equipo no coincide con ningún turno.</div>'; return; }
+    const durMin = U.min(turnos[0].fin) - U.min(turnos[0].inicio);
+    const dur = `${String(Math.floor(durMin / 60)).padStart(2, '0')}:${String(durMin % 60).padStart(2, '0')}:00`;
+    const hoyD = new Date(s.hoy + 'T12:00:00');
     S.cal = new FullCalendar.Calendar($('#calendario'), {
-      locale: 'es', timeZone: 'local', firstDay: 1,
+      locale: 'es', timeZone: 'local', firstDay: 0,
       initialView: movil ? 'timeGridDay' : 'timeGridWeek',
-      initialDate: r.q.fecha || undefined,
-      headerToolbar: movil ? { left: 'prev,next', center: 'title', right: 'today' } : { left: 'prev,next today', center: 'title', right: 'timeGridWeek,timeGridDay' },
+      initialDate: admin && r.q.fecha ? r.q.fecha : (movil ? s.hoy : s.dom),
+      validRange: admin ? undefined : { start: s.dom, end: U.sumarDias(s.dom, 7) },
+      headerToolbar: movil ? { left: 'prev,next', center: 'title', right: 'today' } : { left: admin ? 'prev,next today' : '', center: 'title', right: 'timeGridWeek,timeGridDay' },
       buttonText: { today: 'Hoy', week: 'Semana', day: 'Día' },
       titleFormat: movil ? { weekday: 'short', day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' },
       allDaySlot: false, nowIndicator: true, height: 'auto', expandRows: true,
-      slotMinTime: U.hm(sel.hora_inicio) + ':00', slotMaxTime: U.hm(sel.hora_fin) + ':00',
-      slotDuration: '00:30:00', snapDuration: '00:30:00', slotLabelInterval: '01:00',
-      slotLabelFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
+      slotMinTime: U.hm(turnos[0].inicio) + ':00', slotMaxTime: U.hm(turnos[turnos.length - 1].fin) + ':00',
+      slotDuration: dur, snapDuration: dur, slotLabelInterval: dur,
+      slotLabelContent: a => {
+        const t = turnoEnMinuto(a.date.getHours() * 60 + a.date.getMinutes());
+        return { html: t ? `<div class="turno-label"><b>${esc(t.nombre.replace('Turno ', ''))}</b><span>${U.hm(t.inicio)}</span><span>${U.hm(t.fin)}</span></div>` : '' };
+      },
       eventTimeFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
       dayHeaderFormat: movil ? { weekday: 'long', day: 'numeric' } : { weekday: 'short', day: 'numeric' },
-      businessHours: { daysOfWeek: [0, 1, 2, 3, 4, 5, 6], startTime: U.hm(sel.hora_inicio), endTime: U.hm(sel.hora_fin) },
-      selectable: disp, selectMirror: true, selectOverlap: false, unselectAuto: true,
-      longPressDelay: 350, selectLongPressDelay: 350, eventLongPressDelay: 350,
-      eventOverlap: false,
-      selectAllow: i => i.start >= new Date(Date.now() - 600e3) && (i.end - i.start) <= maxMs,
+      selectable: disp, selectMirror: false, selectOverlap: false, unselectAuto: true,
+      longPressDelay: 200, selectLongPressDelay: 200,
+      editable: false, eventOverlap: false,
+      selectAllow: i => (i.end - i.start) === durMin * 60000 && (admin || i.end > new Date()),
       select: i => {
         S.cal.unselect();
-        nuevaReserva(sel, U.fechaLima(i.start), U.horaLima(i.start), () => S.cal.refetchEvents(), U.horaLima(i.end));
+        const t = turnoEnMinuto(i.start.getHours() * 60 + i.start.getMinutes());
+        nuevaReserva(sel, U.fechaLima(i.start), t && t.numero, refrescar);
       },
       events: async (info, ok, mal) => {
         try {
-          const rs = (await API.reservas(info.start, info.end)).filter(x => x.equipo_id === sel.id);
-          cache = rs;
-          ok(rs.map(x => {
-            const mia = x.usuario_id === S.yo.id, editable = (mia || S.yo.rol === 'admin') && new Date(x.inicio) > new Date();
+          const rs = await API.reservas(info.start, info.end);
+          const deEq = rs.filter(x => x.equipo_id === sel.id);
+          const mias = rs.filter(x => x.usuario_id === S.yo.id && x.equipo_id === sel.id && U.fechaLima(new Date(x.inicio)) >= s.dom && U.fechaLima(new Date(x.inicio)) <= s.sab).length;
+          const cupo = $('#mi-cupo', v);
+          if (cupo) cupo.textContent = admin ? `de ${U.hm(sel.hora_inicio)} a ${U.hm(sel.hora_fin)}` : `usted tiene ${mias} de ${R('max_turnos_equipo_semana')} turnos esta semana`;
+          ok(deEq.map(x => {
+            const mia = x.usuario_id === S.yo.id;
             return { id: String(x.id), start: x.inicio, end: x.fin, title: (mia ? 'Usted' : x.usuario_nombre) + (x.supervisor ? ` (${x.supervisor})` : ''),
-              classNames: [mia ? 'ev-mia' : 'ev-otro'], editable, durationEditable: editable, startEditable: editable, extendedProps: { r: x } };
+              classNames: [mia ? 'ev-mia' : 'ev-otro'], extendedProps: { r: x } };
           }));
         } catch (e) { aviso(e.message, 'error'); mal(e); }
       },
@@ -592,12 +658,8 @@
         const x = a.event.extendedProps.r;
         return { html: `<div class="ev-c"><div class="num" style="font-size:.78rem;opacity:.9">${a.timeText}</div><div style="font-weight:700">${esc(a.event.title)}</div><div style="font-size:.8rem;opacity:.9">${esc(x.uso)}</div></div>` };
       },
-      eventClick: a => detalleReserva(a.event.extendedProps.r, () => S.cal.refetchEvents()),
-      eventAllow: (i) => i.start >= new Date(Date.now() - 600e3) && (i.end - i.start) <= maxMs,
-      eventChange: async a => {
-        try { await API.actualizarReserva(+a.event.id, { inicio: a.event.start, fin: a.event.end }); aviso(`Reserva movida a ${hora(a.event.start)}–${hora(a.event.end)}`, 'ok'); S.cal.refetchEvents(); }
-        catch (e) { a.revert(); aviso(e.message, 'error'); }
-      }
+      eventClick: a => detalleReserva(a.event.extendedProps.r, refrescar),
+      dayCellClassNames: a => (a.date < hoyD && U.fechaLima(a.date) < s.hoy ? ['dia-pasado'] : [])
     });
     S.cal.render();
   }
@@ -818,10 +880,9 @@
 
   function adminEquipos(c) {
     const pintar = () => {
-      $('#tabla-e', c).innerHTML = `<table class="tabla"><thead><tr><th>Código</th><th>Equipo</th><th>Laboratorio</th><th>Prioridad</th><th>Horario</th><th>Máx.</th><th>Estado</th><th></th></tr></thead><tbody>
+      $('#tabla-e', c).innerHTML = `<table class="tabla"><thead><tr><th>Código</th><th>Equipo</th><th>Laboratorio</th><th>Prioridad</th><th>Horario</th><th>Estado</th><th></th></tr></thead><tbody>
         ${S.equipos.map(e => `<tr><td><b>${esc(e.codigo)}</b></td><td>${esc(e.nombre)}</td><td>${esc(e.laboratorio || 'Compartido')}</td>
-          <td><span class="punto p${e.prioridad}"></span> ${PRIORIDAD[e.prioridad]}</td><td class="num">${U.hm(e.hora_inicio)}–${U.hm(e.hora_fin)}</td><td class="num">${e.duracion_max_h ? e.duracion_max_h + ' h' : '—'}</td>
-          <td>${e.estado === 'Disponible' ? '<span class="chip verde">Disponible</span>' : e.estado === 'Mantenimiento' ? '<span class="chip ambar">Mantenimiento</span>' : '<span class="chip rojo">Fuera de servicio</span>'}</td>
+          <td><span class="punto p${e.prioridad}"></span> ${PRIORIDAD[e.prioridad]}</td><td class="num">${U.hm(e.hora_inicio)}–${U.hm(e.hora_fin)}</td>          <td>${e.estado === 'Disponible' ? '<span class="chip verde">Disponible</span>' : e.estado === 'Mantenimiento' ? '<span class="chip ambar">Mantenimiento</span>' : '<span class="chip rojo">Fuera de servicio</span>'}</td>
           <td class="acciones"><button class="btn sec chico" data-ed="${esc(e.codigo)}">Editar</button></td></tr>`).join('')}</tbody></table>`;
       $$('[data-ed]', c).forEach(b => b.addEventListener('click', () => editar(S.equipos.find(e => e.codigo === b.dataset.ed))));
     };
@@ -830,7 +891,7 @@
     $('#nuevo-e', c).addEventListener('click', () => editar(null));
     pintar();
     function editar(e) {
-      const nuevo = !e; e = e || { codigo: '', nombre: '', laboratorio: S.labs[0]?.codigo, prioridad: 2, hora_inicio: '08:00', hora_fin: '18:00', duracion_max_h: 4, estado: 'Disponible', observaciones: '' };
+      const nuevo = !e; e = e || { codigo: '', nombre: '', laboratorio: S.labs[0]?.codigo, prioridad: 2, hora_inicio: '08:00', hora_fin: '21:30', duracion_max_h: null, estado: 'Disponible', observaciones: '' };
       modal({ titulo: nuevo ? 'Agregar equipo' : `Editar ${e.codigo}`, cuerpo: `
         <div class="rejilla-2">
           <label class="campo"><span>Código</span><input type="text" name="codigo" value="${esc(e.codigo)}" ${nuevo ? '' : 'readonly'} placeholder="Ej.: EQ1-004"></label>
@@ -843,7 +904,6 @@
           <label class="campo"><span>Hasta</span><input type="time" name="hf" value="${U.hm(e.hora_fin)}" step="1800"></label>
         </div>
         <div class="rejilla-2">
-          <label class="campo"><span>Duración máxima (h)</span><input type="number" name="max" min="0.5" step="0.5" value="${e.duracion_max_h ?? ''}" placeholder="Sin límite"></label>
           <label class="campo"><span>Estado</span><select name="estado">${['Disponible', 'Mantenimiento', 'Fuera de servicio'].map(s => `<option ${e.estado === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
         </div>
         <label class="campo"><span>Observaciones</span><input type="text" name="obs" value="${esc(e.observaciones || '')}"></label>
@@ -854,7 +914,7 @@
           if (nuevo && S.equipos.some(x => x.codigo === g('codigo').toUpperCase())) throw new Error('Ya existe un equipo con ese código.');
           if (!g('hi') || !g('hf') || g('hf') <= g('hi')) throw new Error('La hora de fin debe ser posterior a la de inicio.');
           await API.guardarEquipo({ codigo: g('codigo').toUpperCase(), nombre: g('nombre'), laboratorio: g('lab') || null, prioridad: +g('prio'),
-            hora_inicio: g('hi'), hora_fin: g('hf'), duracion_max_h: g('max') ? +g('max') : null, estado: g('estado'), observaciones: g('obs') || null });
+            hora_inicio: g('hi'), hora_fin: g('hf'), duracion_max_h: e.duracion_max_h ?? null, estado: g('estado'), observaciones: g('obs') || null });
           S.equipos = await API.equipos(); pintar(); aviso(nuevo ? 'Equipo agregado' : 'Equipo actualizado', 'ok');
         } }] });
     }
@@ -1119,7 +1179,7 @@
           else {
             const dif = [];
             if (ya.nombre !== nombre) dif.push('nombre'); if ((ya.laboratorio || null) !== lab) dif.push('laboratorio'); if (ya.prioridad !== pr) dif.push('prioridad');
-            if (U.hm(ya.hora_inicio) !== hi || U.hm(ya.hora_fin) !== hf) dif.push('horario'); if ((ya.duracion_max_h == null ? null : +ya.duracion_max_h) !== nuevo.duracion_max_h) dif.push('duración');
+            if (U.hm(ya.hora_inicio) !== hi || U.hm(ya.hora_fin) !== hf) dif.push('horario');
             if (ya.estado !== est) dif.push('estado');
             if (dif.length) cambiosE.push({ tipo: 'mod', dif, d: nuevo });
           }
