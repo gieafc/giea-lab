@@ -39,6 +39,8 @@
       if (/should be different/i.test(m)) return 'El nuevo PIN debe ser distinto del actual.';
       if (/Failed to fetch|NetworkError|network/i.test(m)) return 'No hay conexión con el servidor. Revise su internet e intente de nuevo.';
       if (e && e.code === '23P01' && !/Horario ocupado/.test(m)) return 'Otra persona acaba de reservar ese horario. Elija otro bloque.';
+      if (/observaciones/i.test(m) && /schema cache|does not exist/i.test(m)) return 'Falta instalar la sección de Observaciones: ejecute actualizacion_observaciones.sql en Supabase.';
+      if (/check constraint "observaciones_texto/i.test(m)) return 'Escriba la observación (mínimo 5 caracteres).';
       if (/row-level security|permission denied/i.test(m)) return 'No tiene permiso para esta acción.';
       if (/JWT expired|not authenticated/i.test(m)) return 'Su sesión expiró. Vuelva a ingresar.';
       return m;
@@ -111,6 +113,27 @@
       },
       async guardarLaboratorio(l) {
         return ok(await sb.from('laboratorios').upsert(l, { onConflict: 'codigo' }).select().single());
+      },
+      async observaciones(desde, hasta) {
+        let q = sb.from('observaciones_detalle').select('*').order('creado', { ascending: false }).limit(1000);
+        if (desde) q = q.gte('creado', desde.toISOString());
+        if (hasta) q = q.lt('creado', hasta.toISOString());
+        return ok(await q);
+      },
+      async crearObservacion(o) {
+        return ok(await sb.from('observaciones').insert({ equipo_id: o.equipo_id || null, texto: o.texto }).select().single());
+      },
+      async resolverObservacion(id, nota) {
+        const d = ok(await sb.from('observaciones').update({ estado: 'Resuelta', nota_resolucion: nota || null }).eq('id', id).select());
+        if (!d.length) throw new Error('Solo un administrador puede marcar observaciones como resueltas.');
+      },
+      async reabrirObservacion(id) {
+        const d = ok(await sb.from('observaciones').update({ estado: 'Pendiente' }).eq('id', id).select());
+        if (!d.length) throw new Error('Solo un administrador puede reabrir observaciones.');
+      },
+      async borrarObservacion(id) {
+        const d = ok(await sb.from('observaciones').delete().eq('id', id).select());
+        if (!d.length) throw new Error('Solo puede borrar sus propias observaciones pendientes.');
       }
     };
   }
@@ -126,11 +149,16 @@
     const perfiles = D.usuarios.map(u => ({ id: uid(), activo: true, cambiar_pin: false, observaciones: null, ...u }));
     const pins = {}; perfiles.forEach(p => { pins[p.codigo] = p.pin; delete p.pin; });
     const equipos = D.equipos.map((e, i) => ({ id: i + 1, observaciones: null, ...e }));
-    let reservas = [], asistencia = [], yo = null;
+    let reservas = [], asistencia = [], observaciones = [], yo = null;
     try { const s = sessionStorage.getItem('giea-demo-yo'); if (s) yo = perfiles.find(p => p.codigo === s) || null; } catch (e) {}
 
     const error = m => { throw new Error(m); };
     const esAdmin = () => yo && yo.rol === 'admin';
+    const detalleObs = o => {
+      const e = equipos.find(x => x.id === o.equipo_id), p = perfiles.find(x => x.id === o.usuario_id), r = perfiles.find(x => x.id === o.resuelta_por);
+      return { ...o, equipo_codigo: e ? e.codigo : null, equipo_nombre: e ? e.nombre : null, equipo_laboratorio: e ? e.laboratorio : null,
+               usuario_codigo: p.codigo, usuario_nombre: p.nombre, supervisor: p.supervisor, resuelta_por_nombre: r ? r.nombre : null };
+    };
     const detalle = r => {
       const e = equipos.find(x => x.id === r.equipo_id), p = perfiles.find(x => x.id === r.usuario_id);
       return { ...r, equipo_codigo: e.codigo, equipo_nombre: e.nombre, equipo_laboratorio: e.laboratorio,
@@ -192,6 +220,14 @@
           if (sal < new Date()) asistencia.push({ id: ++seq, usuario_id: u.id, laboratorio: lab, tipo: 'salida', momento: sal.toISOString() });
         });
       }
+      // Observaciones de ejemplo
+      const u1 = usuarios[1] || usuarios[0], u2 = usuarios[2] || usuarios[0], adm = perfiles.find(p => p.rol === 'admin');
+      const hace = h => new Date(Date.now() - h * 3600e3).toISOString();
+      observaciones.push(
+        { id: ++seq, equipo_id: equipos[0].id, usuario_id: u1.id, texto: 'La lectura de corriente se satura por encima de 10 mA; revisar cable del electrodo de trabajo.', estado: 'Pendiente', creado: hace(5) },
+        { id: ++seq, equipo_id: null, usuario_id: u2.id, texto: 'Encontré los electrodos de referencia fuera de su solución de almacenamiento.', estado: 'Pendiente', creado: hace(28) },
+        { id: ++seq, equipo_id: equipos[4] ? equipos[4].id : equipos[0].id, usuario_id: u2.id, texto: 'El software no reconoce el equipo al encenderlo.', estado: 'Resuelta', creado: hace(96),
+          resuelta_por: adm ? adm.id : null, resuelta_en: hace(70), nota_resolucion: 'Se reinstaló el driver USB.' });
     })();
 
     function token(lab, v) { let h = 2166136261; const s = 'demo:' + lab + ':' + v; for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return ('0000000000' + (h >>> 0).toString(16).toUpperCase()).slice(-10); }
@@ -306,6 +342,30 @@
       async guardarLaboratorio(l) {
         if (!esAdmin()) error('No tiene permiso para esta acción.');
         let x = labs.find(z => z.codigo === l.codigo); if (!x) { x = {}; labs.push(x); } Object.assign(x, l); return espera({ ...x });
+      },
+      async observaciones(desde, hasta) {
+        return espera(observaciones.filter(o => (!desde || new Date(o.creado) >= desde) && (!hasta || new Date(o.creado) < hasta))
+          .sort((a, b) => b.creado.localeCompare(a.creado)).map(detalleObs));
+      },
+      async crearObservacion(o) {
+        if (!yo || !['usuario', 'admin'].includes(yo.rol)) error('No tiene permiso para esta acción.');
+        if (!o.texto || o.texto.trim().length < 5) error('Escriba la observación (mínimo 5 caracteres).');
+        const n = { id: ++seq, equipo_id: o.equipo_id || null, usuario_id: yo.id, texto: o.texto.trim(), estado: 'Pendiente', creado: new Date().toISOString() };
+        observaciones.push(n); return espera(n);
+      },
+      async resolverObservacion(id, nota) {
+        if (!esAdmin()) error('Solo un administrador puede marcar observaciones como resueltas.');
+        const o = observaciones.find(x => x.id === id);
+        Object.assign(o, { estado: 'Resuelta', resuelta_por: yo.id, resuelta_en: new Date().toISOString(), nota_resolucion: nota || null });
+      },
+      async reabrirObservacion(id) {
+        if (!esAdmin()) error('Solo un administrador puede reabrir observaciones.');
+        Object.assign(observaciones.find(x => x.id === id), { estado: 'Pendiente', resuelta_por: null, resuelta_en: null, nota_resolucion: null });
+      },
+      async borrarObservacion(id) {
+        const o = observaciones.find(x => x.id === id);
+        if (!o || !(esAdmin() || (o.usuario_id === yo.id && o.estado === 'Pendiente'))) error('Solo puede borrar sus propias observaciones pendientes.');
+        observaciones = observaciones.filter(x => x.id !== id);
       }
     };
   }

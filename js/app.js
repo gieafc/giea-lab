@@ -44,7 +44,8 @@
     descargar: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
     subir: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
     pantalla: '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
-    editar: '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'
+    editar: '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+    observ: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v4M12 14h.01"/>'
   };
   const ic = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n]}</svg>`;
 
@@ -122,7 +123,7 @@
     if (v === 'qr') return S.yo.rol === 'admin' ? vistaQR(r.q.lab || S.labs[0].codigo) : ir('#/asistencia');
     const vistas = {
       panel: vistaPanel, reservar: vistaReservar, 'mis-reservas': vistaMisReservas,
-      asistencia: vistaAsistencia, marcar: vistaMarcar, pin: () => vistaPin(false), admin: vistaAdmin
+      asistencia: vistaAsistencia, marcar: vistaMarcar, observaciones: vistaObservaciones, pin: () => vistaPin(false), admin: vistaAdmin
     };
     if (v === 'admin' && S.yo.rol !== 'admin') return ir('#/panel');
     (vistas[v] || vistaPanel)(r);
@@ -133,10 +134,12 @@
     const esAdmin = S.yo.rol === 'admin';
     const nav = [
       ['panel', 'Panel', 'panel'], ['reservar', 'Reservar', 'reservar'],
-      ['mis-reservas', 'Mis reservas', 'mis'], ['asistencia', 'Asistencia', 'asistencia']
+      ['mis-reservas', 'Mis reservas', 'mis', 'Reservas'], ['asistencia', 'Asistencia', 'asistencia'],
+      ['observaciones', 'Observaciones', 'observ', 'Observ.']
     ];
-    if (esAdmin) nav.push(['admin', 'Administración', 'admin']);
+    if (esAdmin) nav.push(['admin', 'Administración', 'admin', 'Admin']);
     const link = ([h, t, i]) => `<a href="#/${h}" ${activa === h ? 'aria-current="page"' : ''}>${ic(i)}<span>${t}</span></a>`;
+    const linkCorto = ([h, t, i, c]) => link([h, c || t, i]);
     $app.innerHTML = `
     <div class="shell">
       <aside class="lateral">
@@ -161,7 +164,7 @@
         <div class="cabecera"><div>${ruta_ ? `<div class="ruta">${ruta_}</div>` : ''}<h1>${titulo}</h1></div><div class="acciones-cab fila"></div></div>
         <div id="vista">${contenido || ''}</div>
       </main>
-      <nav class="barra-movil" aria-label="Principal">${nav.map(link).join('')}</nav>
+      <nav class="barra-movil" aria-label="Principal">${nav.map(linkCorto).join('')}</nav>
     </div>`;
     $$('[data-salir]').forEach(b => b.addEventListener('click', async e => { e.preventDefault(); await API.salir(); S.yo = null; location.hash = '#/panel'; render(); }));
     return $('#vista');
@@ -301,12 +304,14 @@
     const hace30 = U.enLima(U.sumarDias(hoy, -30), '00:00'), en60 = U.enLima(U.sumarDias(hoy, 60), '00:00');
 
     try {
-      const [delDia, rango, presentes, asis] = await Promise.all([
+      const [delDia, rango, presentes, asis, obs] = await Promise.all([
         API.reservas(inicioDia, finDia),
         API.reservas(hace30, en60),
         API.presentes().catch(() => []),
-        API.reporteAsistencia(U.sumarDias(hoy, -6), hoy).catch(() => [])
+        API.reporteAsistencia(U.sumarDias(hoy, -6), hoy).catch(() => []),
+        API.observaciones().catch(() => [])
       ]);
+      S.obsPend = obs.filter(o => o.estado === 'Pendiente');
       pintarLineaTiempo($('#t-hoy .linea-tiempo'), fecha, filtro, delDia);
       pintarUso($('#t-uso .barras'), rango.filter(x => new Date(x.inicio) < new Date() && new Date(x.fin) > hace30));
       pintarProximas($('#t-prox .lista'), rango.filter(x => x.usuario_id === S.yo.id && new Date(x.fin) > new Date()).slice(0, 5));
@@ -333,7 +338,7 @@
         const motivo = e.estado !== 'Disponible' ? e.estado : 'Solo ' + nombreLab(e.laboratorio);
         return `<div class="lt-fila">
           <div class="lt-equipo"><span class="punto p${e.prioridad}" title="Prioridad ${PRIORIDAD[e.prioridad]}"></span>
-            <div class="txt"><div class="n" title="${esc(e.nombre)}">${esc(e.nombre)}</div><div class="c">${esc(e.codigo)} · ${esc(e.laboratorio ? e.laboratorio : 'Compartido')}</div></div></div>
+            <div class="txt"><div class="n" title="${esc(e.nombre)}">${esc(e.nombre)}</div><div class="c">${esc(e.codigo)} · ${esc(e.laboratorio ? e.laboratorio : 'Compartido')}${(() => { const n = (S.obsPend || []).filter(o => o.equipo_id === e.id).length; return n ? ` · <a class="obs-aviso" href="#/observaciones?equipo=${e.id}" title="${n} observación(es) pendiente(s)">${ic('alerta')}${n}</a>` : ''; })()}</div></div></div>
           <div class="lt-pista ${e.estado !== 'Disponible' ? 'bloqueada' : ''}" data-eq="${e.id}" data-estado="${esc(e.estado !== 'Disponible' ? e.estado : '')}" ${bloqueada ? 'data-bloq="' + esc(motivo) + '"' : ''}>
             ${horas.slice(1, -1).map(m => `<span class="reja" style="left:${pct(m)}"></span>`).join('')}
             <span class="reja" style="left:${pct(U.min(e.hora_inicio))};border-left:0;width:0"></span>
@@ -519,6 +524,7 @@
             <div><h2>${esc(sel.nombre)}</h2>
             <div class="datos">${esc(sel.codigo)} · ${esc(nombreLab(sel.laboratorio))} · de ${U.hm(sel.hora_inicio)} a ${U.hm(sel.hora_fin)}${sel.duracion_max_h ? ` · máx. ${sel.duracion_max_h} h` : ''}</div></div>
             <button class="btn" data-nueva>${ic('mas')} Nueva reserva</button></header>
+            <div id="obs-equipo"></div>
             <p class="tenue" style="font-size:.9rem;margin-bottom:10px">Arrastre sobre el calendario para elegir el bloque de horas${window.innerWidth < 760 ? ' (mantenga presionado y deslice)' : ''}. Sus reservas aparecen en coral y se pueden mover o estirar.</p>
             <div id="calendario"></div>` : '<div class="vacio">Seleccione un equipo.</div>'}
         </section>
@@ -531,6 +537,14 @@
       $$('.eq-op', v).forEach(b => b.classList.toggle('oculto', !!t && !b.dataset.busca.includes(t)));
     });
     if (!sel) return;
+    API.observaciones().then(obs => {
+      const pend = obs.filter(o => o.equipo_id === sel.id && o.estado === 'Pendiente');
+      const caja = $('#obs-equipo', v); if (!caja) return;
+      caja.innerHTML = pend.length ? `<div class="obs-caja"><div class="fila" style="justify-content:space-between"><b>${ic('alerta')} ${pend.length === 1 ? 'Hay 1 observación pendiente' : `Hay ${pend.length} observaciones pendientes`} sobre este equipo</b>
+          <a href="#/observaciones?equipo=${sel.id}">Ver todas</a></div>
+          ${pend.slice(0, 2).map(o => `<p>«${esc(o.texto)}» <span class="tenue">— ${esc(primerNombre(o.usuario_nombre))}, ${fechaCorta(o.creado)}</span></p>`).join('')}</div>`
+        : `<p class="tenue" style="font-size:.9rem;margin-bottom:8px">¿Notó algún problema con este equipo? <a href="#/observaciones?equipo=${sel.id}">Registrar una observación</a></p>`;
+    }).catch(() => {});
     const disp = sel.estado === 'Disponible';
     $('[data-nueva]', v).disabled = !disp;
     $('[data-nueva]', v).addEventListener('click', () => {
@@ -869,7 +883,8 @@
         <label class="campo"><span>Laboratorio</span><select id="a-l"><option value="">Todos</option>${S.labs.map(l => `<option value="${l.codigo}">${esc(l.nombre)}</option>`).join('')}</select></label>
       </div><button class="btn sec" id="a-x">${ic('descargar')} Descargar Excel</button></header>
       <div id="a-res" style="margin-bottom:18px"></div>
-      <div class="tabla-caja" id="a-t"><div class="vacio">Cargando…</div></div></section>`;
+      <div class="tabla-caja" id="a-t"><div class="vacio">Cargando…</div></div>
+      <p class="tenue" style="font-size:.9rem;margin-top:14px">El Excel incluye dos hojas: <b>Asistencia</b> y <b>Observaciones</b> del mismo periodo.</p></section>`;
     let filas = [];
     const cargar = async () => {
       try {
@@ -885,14 +900,140 @@
     };
     ['#a-d', '#a-h', '#a-l'].forEach(s => $(s, c).addEventListener('change', cargar));
     $('#a-x', c).addEventListener('click', async () => {
-      if (!filas.length) return aviso('No hay datos para descargar en este periodo.');
       await cargarXLSX();
+      const d0 = $('#a-d', c).value, d1 = $('#a-h', c).value, lab = $('#a-l', c).value;
+      let obs = [];
+      try { obs = (await API.observaciones(U.enLima(d0, '00:00'), U.enLima(U.sumarDias(d1, 1), '00:00'))).filter(o => !lab || !o.equipo_laboratorio || o.equipo_laboratorio === lab); } catch (e) { aviso(e.message, 'error'); }
+      if (!filas.length && !obs.length) return aviso('No hay asistencia ni observaciones en este periodo.');
       const datos = filas.map(f => ({ Fecha: f.fecha, 'Código': f.codigo, Nombre: f.nombre, Supervisor: f.supervisor || '', Laboratorio: f.laboratorio,
         Entrada: f.entrada ? hora(f.entrada) : '', Salida: f.salida && f.salida > (f.entrada || '') ? hora(f.salida) : '', Horas: f.horas > 0 ? Number(f.horas) : '' }));
       const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(datos);
       ws['!cols'] = [12, 10, 32, 20, 12, 9, 9, 8].map(w => ({ wch: w }));
       XLSX.utils.book_append_sheet(wb, ws, 'Asistencia');
-      XLSX.writeFile(wb, `asistencia_${$('#a-d', c).value}_a_${$('#a-h', c).value}.xlsx`);
+      XLSX.utils.book_append_sheet(wb, hojaObservaciones(obs), 'Observaciones');
+      XLSX.writeFile(wb, `reporte_${d0}_a_${d1}.xlsx`);
+    });
+    cargar();
+  }
+
+  function hojaObservaciones(obs) {
+    const datos = obs.map(o => ({ Fecha: U.fechaLima(new Date(o.creado)), Hora: hora(o.creado), Equipo: o.equipo_nombre || 'General (sin equipo)',
+      'Código equipo': o.equipo_codigo || '', Laboratorio: o.equipo_laboratorio || '', 'Observación': o.texto,
+      'Registrado por': o.usuario_nombre, Supervisor: o.supervisor || '', Estado: o.estado,
+      'Resuelta el': o.resuelta_en ? U.fechaLima(new Date(o.resuelta_en)) : '', 'Resuelta por': o.resuelta_por_nombre || '', 'Nota de resolución': o.nota_resolucion || '' }));
+    const ws = XLSX.utils.json_to_sheet(datos.length ? datos : [{ Fecha: '', 'Observación': 'Sin observaciones en este periodo' }]);
+    ws['!cols'] = [11, 7, 34, 13, 11, 60, 26, 18, 11, 11, 22, 36].map(w => ({ wch: w }));
+    return ws;
+  }
+
+  /* ================= OBSERVACIONES ================= */
+  async function vistaObservaciones(r) {
+    const admin = S.yo.rol === 'admin';
+    const estado = r.q.estado || 'Pendiente', filEq = r.q.equipo || '';
+    const eqOrden = [...S.equipos].sort((a, b) => a.nombre.localeCompare(b.nombre));
+    const v = shell('observaciones', 'Observaciones', '', `
+      <div class="panel-rejilla">
+        <section class="tarjeta">
+          <header>
+            <div class="fila">
+              <div class="segmentos" role="group" aria-label="Estado">
+                ${[['Pendiente', 'Pendientes'], ['Resuelta', 'Resueltas'], ['todas', 'Todas']].map(([k, t]) => `<button type="button" data-est="${k}" aria-pressed="${estado === k}">${t}</button>`).join('')}
+              </div>
+              <select id="o-fil" aria-label="Filtrar por equipo" style="max-width:260px;min-height:38px;padding:.35rem .6rem">
+                <option value="">Todos los equipos</option><option value="general" ${filEq === 'general' ? 'selected' : ''}>General (sin equipo)</option>
+                ${eqOrden.map(e => `<option value="${e.id}" ${String(e.id) === filEq ? 'selected' : ''}>${esc(e.nombre)}</option>`).join('')}
+              </select>
+            </div>
+            ${admin ? `<button class="btn sec chico" id="o-x">${ic('descargar')} Descargar Excel</button>` : ''}
+          </header>
+          <div class="lista" id="o-lista"><div class="vacio">Cargando…</div></div>
+        </section>
+        <section class="tarjeta obs-form">
+          <h2 style="margin-bottom:12px">Nueva observación</h2>
+          <form class="lista" id="o-form" novalidate>
+            <label class="campo"><span>Equipo</span>
+              <select name="equipo">
+                <option value="">General (sin equipo específico)</option>
+                ${eqOrden.map(e => `<option value="${e.id}" ${String(e.id) === filEq ? 'selected' : ''}>${esc(e.nombre)} (${esc(e.codigo)})</option>`).join('')}
+              </select></label>
+            <label class="campo"><span>Observación</span>
+              <textarea name="texto" maxlength="1000" rows="5" placeholder="Ej.: El potenciostato 1 falla al leer la corriente. / Encontré los electrodos del equipo mal colocados."></textarea></label>
+            <div class="error oculto" role="alert"></div>
+            <button class="btn" type="submit">${ic('observ')} Registrar observación</button>
+            <p class="tenue" style="font-size:.88rem">La verán todos los integrantes, y el administrador podrá marcarla como resuelta.</p>
+          </form>
+        </section>
+      </div>`);
+    const nav = (e, q) => ir(`#/observaciones?estado=${e}${q ? '&equipo=' + q : ''}`);
+    $$('[data-est]', v).forEach(b => b.addEventListener('click', () => nav(b.dataset.est, $('#o-fil', v).value)));
+    $('#o-fil', v).addEventListener('change', e => nav(estado, e.target.value));
+
+    let lista = [];
+    async function cargar() {
+      const caja = $('#o-lista', v);
+      try {
+        const todas = await API.observaciones();
+        lista = todas.filter(o => (estado === 'todas' || o.estado === estado)
+          && (!filEq || (filEq === 'general' ? !o.equipo_id : String(o.equipo_id) === filEq)));
+        const pend = todas.filter(o => o.estado === 'Pendiente').length;
+        const bt = $('[data-est="Pendiente"]', v); if (bt) bt.textContent = `Pendientes (${pend})`;
+        if (!lista.length) { caja.innerHTML = `<div class="vacio">${estado === 'Pendiente' ? 'No hay observaciones pendientes.' : 'No hay observaciones con este filtro.'}</div>`; return; }
+        caja.innerHTML = lista.map(o => {
+          const mia = o.usuario_id === S.yo.id;
+          return `<article class="obs-item ${o.estado === 'Resuelta' ? 'resuelta' : ''}">
+            <div class="fila" style="justify-content:space-between;gap:8px">
+              <div class="t">${o.equipo_nombre ? esc(o.equipo_nombre) : 'General'}${o.equipo_codigo ? ` <span class="tenue" style="font-weight:500">${esc(o.equipo_codigo)}</span>` : ''}</div>
+              ${o.estado === 'Pendiente' ? '<span class="chip ambar">Pendiente</span>' : '<span class="chip verde">Resuelta</span>'}
+            </div>
+            <p class="texto">${esc(o.texto)}</p>
+            <div class="s tenue">${esc(o.usuario_nombre)}${o.supervisor ? ' (' + esc(o.supervisor) + ')' : ''} · ${fechaCorta(o.creado)}, ${hora(o.creado)}</div>
+            ${o.estado === 'Resuelta' ? `<div class="resolucion">${ic('ok')}<span>Resuelta${o.resuelta_por_nombre ? ' por ' + esc(o.resuelta_por_nombre) : ''}${o.resuelta_en ? ' el ' + fechaCorta(o.resuelta_en) : ''}${o.nota_resolucion ? ': ' + esc(o.nota_resolucion) : ''}</span></div>` : ''}
+            <div class="fila acciones-obs">
+              ${admin && o.estado === 'Pendiente' ? `<button class="btn chico" data-resolver="${o.id}">${ic('ok')} Marcar resuelta</button>` : ''}
+              ${admin && o.estado === 'Resuelta' ? `<button class="btn sec chico" data-reabrir="${o.id}">Reabrir</button>` : ''}
+              ${(admin || (mia && o.estado === 'Pendiente')) ? `<button class="btn peligro chico" data-borrar="${o.id}">Borrar</button>` : ''}
+            </div>
+          </article>`;
+        }).join('');
+        $$('[data-resolver]', caja).forEach(b => b.addEventListener('click', () => {
+          const o = lista.find(x => x.id == b.dataset.resolver);
+          modal({ titulo: 'Marcar como resuelta', cuerpo: `<p class="tenue">«${esc(o.texto)}»</p>
+            <label class="campo"><span>¿Qué se hizo? (opcional)</span><input type="text" name="nota" maxlength="300" placeholder="Ej.: Se cambió el cable del electrodo de trabajo"></label>
+            <div class="error error-modal oculto"></div>`,
+            acciones: [{ texto: 'Cancelar', clase: 'sec' }, { texto: 'Marcar resuelta', accion: async f => {
+              await API.resolverObservacion(o.id, f.querySelector('[name=nota]').value.trim()); aviso('Observación marcada como resuelta', 'ok'); cargar();
+            } }] });
+        }));
+        $$('[data-reabrir]', caja).forEach(b => b.addEventListener('click', async () => {
+          try { await API.reabrirObservacion(+b.dataset.reabrir); aviso('Observación reabierta', 'ok'); cargar(); } catch (e) { aviso(e.message, 'error'); }
+        }));
+        $$('[data-borrar]', caja).forEach(b => b.addEventListener('click', async () => {
+          if (!await confirmar('Borrar observación', '¿Borrar esta observación? No se puede deshacer.', 'Borrar', 'peligro')) return;
+          try { await API.borrarObservacion(+b.dataset.borrar); aviso('Observación borrada', 'ok'); cargar(); } catch (e) { aviso(e.message, 'error'); }
+        }));
+      } catch (e) { caja.innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+    }
+
+    const f = $('#o-form', v), err = $('.error', f);
+    f.addEventListener('submit', async e => {
+      e.preventDefault(); err.classList.add('oculto');
+      const texto = f.texto.value.trim();
+      if (texto.length < 5) { err.textContent = 'Describa la observación (mínimo 5 caracteres).'; err.classList.remove('oculto'); return; }
+      const b = $('button[type=submit]', f); b.disabled = true;
+      try {
+        await API.crearObservacion({ equipo_id: f.equipo.value ? +f.equipo.value : null, texto });
+        f.texto.value = ''; aviso('Observación registrada', 'ok');
+        if (estado !== 'Pendiente' && estado !== 'todas') nav('Pendiente', filEq); else cargar();
+      } catch (ex) { err.textContent = ex.message; err.classList.remove('oculto'); }
+      finally { b.disabled = false; }
+    });
+
+    const bx = $('#o-x', v);
+    if (bx) bx.addEventListener('click', async () => {
+      if (!lista.length) return aviso('No hay observaciones para descargar con este filtro.');
+      await cargarXLSX();
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, hojaObservaciones(lista), 'Observaciones');
+      XLSX.writeFile(wb, `observaciones_${U.fechaLima()}.xlsx`);
     });
     cargar();
   }
