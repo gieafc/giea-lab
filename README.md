@@ -73,13 +73,18 @@ El QR cambia cada minuto y cada código sirve durante unos 5 minutos, así que u
   - Reservando un **domingo** (día de planificación): hasta 3 turnos de un mismo equipo en la semana, máximo 2 por día, y hasta 3 equipos en un mismo turno.
   - Reservando de **lunes a sábado**: 1 turno por equipo al día y hasta 2 equipos en un mismo turno. El tope de 3 turnos por equipo en la semana se mantiene.
   - El administrador no tiene cupos. Los números se cambian en la tabla `reglas_reserva` de Supabase, y los horarios de los turnos en la tabla `turnos`.
+- **Equipos de otro laboratorio:** dentro del mismo laboratorio las reservas son automáticas: los integrantes del LAB1 reservan directamente los equipos del LAB1 y los compartidos (lo mismo para el LAB2). Si alguien pide un equipo del otro laboratorio, la reserva queda como **solicitud pendiente** (rayada en el calendario) y necesita **dos aprobaciones**: la de un encargado (profesor) o administrador del laboratorio del equipo y la de uno del laboratorio de quien pide. Cada aprobador solo firma por su propio laboratorio; si quien pide es encargado, su parte se aprueba sola. Cualquiera de los dos puede rechazarla. Un usuario con laboratorio *Ambos* firma por los dos.
+- **Cancelar o cambiar una reserva:** hasta **24 horas antes** del inicio del turno. Una solicitud pendiente se puede retirar en cualquier momento. El administrador puede cancelar siempre.
 - **Choques:** si el turno ya está ocupado, la app lo rechaza y muestra quién lo tiene. La base de datos lo impide incluso si dos personas reservan en el mismo segundo.
 - **Observaciones:** menú *Observaciones* → elegir equipo (o *General*) → describir el problema. El administrador las marca como resueltas.
+- **Reuniones de grupo:** menú *Reuniones* → tema, día, hora de inicio y fin, y lugar (opcional). Cualquier integrante o profesor puede programarlas; no puede haber dos reuniones a la misma hora. Durante la reunión, quien la organizó pulsa **Mostrar QR** (en su laptop o el proyector): el código se activa 15 minutos antes del inicio, cambia cada minuto y los asistentes lo escanean con el celular. La lista de asistentes se ve en *Reuniones → Asistentes* y se descarga en Excel.
+- **Avisos:** menú *Avisos* (con un contador de no leídos). Todos ven las cancelaciones y cambios de reservas, las reuniones programadas o canceladas, y las solicitudes entre laboratorios con su aprobación o rechazo. Los encargados y administradores ven arriba las **solicitudes por aprobar**.
 - **Asistencia:** escanear el QR con la cámara del celular. La primera marca del día es la entrada; la siguiente, la salida.
-- **Reporte:** *Administración → Reporte de asistencia* → elegir fechas → *Descargar Excel* (incluye las hojas Asistencia y Observaciones).
+- **Reporte:** *Administración → Reporte de asistencia* → elegir fechas → *Descargar Excel* (incluye las hojas Asistencia, Observaciones y Reuniones).
 
 ## Administración
 
+- **Encargados de laboratorio:** cree la cuenta de cada profesor en *Administración → Usuarios → Agregar usuario*, con **Rol: Encargado de laboratorio (profesor)** y su laboratorio (LAB1 o LAB2). La app le mostrará el PIN inicial para entregárselo.
 - **Usuarios:** agregar, editar, desactivar (el historial se conserva) y generar un PIN nuevo si alguien lo olvida.
 - **Equipos:** agregar o editar; ponerlo en *Mantenimiento* bloquea las reservas.
 - **Importar Excel:** suba la plantilla (`plantilla/Plantilla_Laboratorio.xlsx`) para altas o cambios masivos. Verá una vista previa antes de aplicar. Nadie se borra por no estar en la planilla; para dar de baja, ponga *Inactivo*.
