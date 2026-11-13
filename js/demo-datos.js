@@ -177,6 +177,22 @@ window.DEMO_DATOS = {
    "pin": "5555"
   },
   {
+   "codigo": "DEMO-PROF",
+   "nombre": "Dra. Profesora Demo",
+   "laboratorio": "LAB1",
+   "supervisor": null,
+   "rol": "encargado",
+   "pin": "7777"
+  },
+  {
+   "codigo": "DEMO-PROF2",
+   "nombre": "Dr. Profesor Demo",
+   "laboratorio": "LAB2",
+   "supervisor": null,
+   "rol": "encargado",
+   "pin": "8888"
+  },
+  {
    "codigo": "QR-LAB1",
    "nombre": "Pantalla QR Laboratorio 1",
    "laboratorio": "LAB1",

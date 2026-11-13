@@ -18,7 +18,7 @@
   const may = t => t.charAt(0).toUpperCase() + t.slice(1);
   const fechaLarga = d => may(fmt(d, { weekday: 'long', day: 'numeric', month: 'long' }));
   const fechaCorta = d => fmt(d, { weekday: 'short', day: 'numeric', month: 'short' });
-  const primerNombre = n => String(n || '').trim().split(/\s+/)[0];
+  const primerNombre = n => { const w = String(n || '').trim().split(/\s+/); return /^(dr|dra|ing|mg|lic|prof)\.?$/i.test(w[0]) && w[1] ? w[0] + ' ' + w[1] : w[0]; };
   const iniciales = n => String(n || '?').trim().split(/\s+/).slice(0, 2).map(x => x[0]).join('').toUpperCase();
   const nombreLab = c => c === 'AMBOS' ? 'Ambos laboratorios' : !c ? 'Compartido' : (S.labs.find(l => l.codigo === c) || {}).nombre || c;
   const PRIORIDAD = { 1: 'Alta', 2: 'Media', 3: 'Baja' };
@@ -45,6 +45,10 @@
     subir: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
     pantalla: '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
     editar: '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+    campana: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+    grupo: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+    puntos: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+    cancelar: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>',
     observ: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v4M12 14h.01"/>'
   };
   const ic = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n]}</svg>`;
@@ -107,8 +111,9 @@
     const r = ruta();
 
     if (!S.yo) {
-      if (r.camino === 'marcar') { try { sessionStorage.setItem('giea-pendiente', location.hash); } catch (e) {} }
-      return vistaAcceso(r.camino === 'marcar');
+      const conQR = r.camino === 'marcar' || r.camino === 'marcar-reunion';
+      if (conQR) { try { sessionStorage.setItem('giea-pendiente', location.hash); } catch (e) {} }
+      return vistaAcceso(conQR);
     }
     if (S.yo.cambiar_pin && !API.demo) return vistaPin(true);
 
@@ -123,7 +128,8 @@
     if (v === 'qr') return S.yo.rol === 'admin' ? vistaQR(r.q.lab || S.labs[0].codigo) : ir('#/asistencia');
     const vistas = {
       panel: vistaPanel, reservar: vistaReservar, 'mis-reservas': vistaMisReservas,
-      asistencia: vistaAsistencia, marcar: vistaMarcar, observaciones: vistaObservaciones, pin: () => vistaPin(false), admin: vistaAdmin
+      asistencia: vistaAsistencia, marcar: vistaMarcar, observaciones: vistaObservaciones, pin: () => vistaPin(false), admin: vistaAdmin,
+      reuniones: vistaReuniones, 'reunion-qr': vistaQRReunion, 'marcar-reunion': vistaMarcarReunion, avisos: vistaAvisos, mas: vistaMas
     };
     if (v === 'admin' && S.yo.rol !== 'admin') return ir('#/panel');
     (vistas[v] || vistaPanel)(r);
@@ -134,12 +140,15 @@
     const esAdmin = S.yo.rol === 'admin';
     const nav = [
       ['panel', 'Panel', 'panel'], ['reservar', 'Reservar', 'reservar'],
-      ['mis-reservas', 'Mis reservas', 'mis', 'Reservas'], ['asistencia', 'Asistencia', 'asistencia'],
+      ['mis-reservas', 'Mis reservas', 'mis', 'Reservas'], ['reuniones', 'Reuniones', 'grupo'],
+      ['avisos', 'Avisos', 'campana'], ['asistencia', 'Asistencia', 'asistencia'],
       ['observaciones', 'Observaciones', 'observ', 'Observ.']
     ];
     if (esAdmin) nav.push(['admin', 'Administración', 'admin', 'Admin']);
-    const link = ([h, t, i]) => `<a href="#/${h}" ${activa === h ? 'aria-current="page"' : ''}>${ic(i)}<span>${t}</span></a>`;
-    const linkCorto = ([h, t, i, c]) => link([h, c || t, i]);
+    const link = ([h, t, i]) => `<a href="#/${h}" ${activa === h ? 'aria-current="page"' : ''}>${ic(i)}<span>${t}</span>${h === 'avisos' ? '<b class="insignia oculto" data-insignia></b>' : ''}</a>`;
+    const movil = [['panel', 'Panel', 'panel'], ['reservar', 'Reservar', 'reservar'], ['reuniones', 'Reuniones', 'grupo'], ['avisos', 'Avisos', 'campana'], ['mas', 'Más', 'puntos']];
+    const enMas = ['mis-reservas', 'asistencia', 'observaciones', 'admin', 'pin', 'mas'];
+    const linkMovil = ([h, t, i]) => `<a href="#/${h}" ${(activa === h || (h === 'mas' && enMas.includes(activa))) ? 'aria-current="page"' : ''}>${ic(i)}<span>${t}</span>${h === 'avisos' ? '<b class="insignia oculto" data-insignia></b>' : ''}</a>`;
     $app.innerHTML = `
     <div class="shell">
       <aside class="lateral">
@@ -164,11 +173,34 @@
         <div class="cabecera"><div>${ruta_ ? `<div class="ruta">${ruta_}</div>` : ''}<h1>${titulo}</h1></div><div class="acciones-cab fila"></div></div>
         <div id="vista">${contenido || ''}</div>
       </main>
-      <nav class="barra-movil" aria-label="Principal">${nav.map(linkCorto).join('')}</nav>
+      <nav class="barra-movil" aria-label="Principal">${movil.map(linkMovil).join('')}</nav>
     </div>`;
     $$('[data-salir]').forEach(b => b.addEventListener('click', async e => { e.preventDefault(); await API.salir(); S.yo = null; location.hash = '#/panel'; render(); }));
+    if (activa !== 'avisos') actualizarInsignia();
     return $('#vista');
   }
+
+  async function actualizarInsignia() {
+    try {
+      const n = await API.avisosNuevos(S.yo.avisos_vistos || new Date(0).toISOString());
+      $$('[data-insignia]').forEach(b => { b.textContent = n > 99 ? '99+' : n; b.classList.toggle('oculto', !n); });
+    } catch (e) {}
+  }
+
+  /* ---------------- Permisos ---------------- */
+  // Equipo de otro laboratorio: la reserva queda pendiente de aprobación
+  const requiereAprobacion = e => !!e && !!e.laboratorio && S.yo.laboratorio !== 'AMBOS' && S.yo.laboratorio !== e.laboratorio;
+  const puedeAprobar = lab => ['encargado', 'admin'].includes(S.yo.rol) && (S.yo.laboratorio === lab || S.yo.laboratorio === 'AMBOS');
+  const esAprobador = () => ['encargado', 'admin'].includes(S.yo.rol);
+  // Una solicitud entre laboratorios necesita un aprobador del laboratorio del equipo y otro del laboratorio de quien pide
+  const puedeResolver = x => puedeAprobar(x.equipo_laboratorio) || puedeAprobar(x.usuario_laboratorio);
+  const ladoPendiente = x => (!x.aprobada_por_nombre && puedeAprobar(x.equipo_laboratorio)) || (!x.aprobada_origen_por_nombre && puedeAprobar(x.usuario_laboratorio));
+  const estadoAprobacion = x => `<div class="aprobaciones">
+      <span class="${x.aprobada_por_nombre ? 'ok' : ''}">${ic(x.aprobada_por_nombre ? 'ok' : 'reloj')} ${esc(x.equipo_laboratorio)} (equipo): ${x.aprobada_por_nombre ? 'aprobó ' + esc(x.aprobada_por_nombre) : 'pendiente'}</span>
+      <span class="${x.aprobada_origen_por_nombre ? 'ok' : ''}">${ic(x.aprobada_origen_por_nombre ? 'ok' : 'reloj')} ${esc(x.usuario_laboratorio)} (solicitante): ${x.aprobada_origen_por_nombre ? 'aprobó ' + esc(x.aprobada_origen_por_nombre) : 'pendiente'}</span></div>`;
+  const plazoCancelar = x => new Date(new Date(x.inicio).getTime() - 24 * 3600e3);
+  const puedeCancelar = x => S.yo.rol === 'admin' || (x.usuario_id === S.yo.id && new Date(x.fin) > new Date() && (x.estado === 'Pendiente' || new Date() < plazoCancelar(x)));
+  const chipEstado = x => x.estado === 'Pendiente' ? '<span class="chip ambar">Pendiente de aprobación</span>' : '';
 
   /* ================= ACCESO ================= */
   function vistaAcceso(desdeQR) {
@@ -199,7 +231,7 @@
           ${API.demo ? `<div class="nota-demo"><b>Modo demostración.</b> Pruebe con
             <button type="button" data-demo="DEMO-ADMIN:1234">administrador</button>,
             <button type="button" data-demo="DEMO2:2222">usuario de Laboratorio 2</button> o
-            <button type="button" data-demo="QR-LAB1:9991">pantalla QR</button>.</div>` : ''}
+            <button type="button" data-demo="QR-LAB1:9991">pantalla QR</button>. Encargados: DEMO-PROF (LAB1, PIN 7777) y DEMO-PROF2 (LAB2, PIN 8888).</div>` : ''}
         </form>
       </section>
     </div>`;
@@ -255,10 +287,6 @@
   }
 
   /* ================= PANEL ================= */
-  function puedeUsar(e) {
-    if (S.yo.rol === 'admin' || !e.laboratorio || S.yo.laboratorio === 'AMBOS') return true;
-    return e.laboratorio === S.yo.laboratorio;
-  }
 
   async function vistaPanel(r) {
     const hoy = U.fechaLima();
@@ -267,6 +295,7 @@
     const saludo = (() => { const h = +hora(new Date()).slice(0, 2); return h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches'; })();
     const v = shell('panel', `${saludo}, ${esc(primerNombre(S.yo.nombre))}`, fechaLarga(new Date()), `
       <div class="columna">
+          <div id="banners" class="banners"></div>
           <section class="tarjeta" id="t-hoy">
             <header>
               <div><h2>Equipos · ${fecha === hoy ? 'hoy' : fechaLarga(U.enLima(fecha, '12:00')).toLowerCase()}</h2>
@@ -283,7 +312,7 @@
               </div>
             </header>
             <div class="linea-tiempo"><div class="vacio">Cargando…</div></div>
-            <div class="leyenda" style="margin-top:12px"><span><i style="background:var(--coral)"></i>Sus reservas</span><span><i style="background:var(--azul)"></i>Reservas de otras personas</span><span><i style="background:repeating-linear-gradient(135deg,#F4F6FA 0 4px,#E1E6EE 4px 8px)"></i>No disponible</span></div>
+            <div class="leyenda" style="margin-top:12px"><span><i style="background:var(--coral)"></i>Sus reservas</span><span><i style="background:var(--azul)"></i>Reservas de otras personas</span><span><i class="ley-pend"></i>Solicitud pendiente</span><span><i style="background:repeating-linear-gradient(135deg,#F4F6FA 0 4px,#E1E6EE 4px 8px)"></i>No disponible</span></div>
           </section>
           <div class="tres">
           <section class="tarjeta" id="t-asis"><header><h2>Su asistencia</h2><a class="btn sec chico" href="#/asistencia">Ver historial</a></header><div class="vacio">Cargando…</div></section>
@@ -318,6 +347,31 @@
       pintarPresentes($('#t-pres .lista'), presentes);
       pintarAsistencia($('#t-asis'), asis.filter(a => a.codigo === S.yo.codigo), hoy);
     } catch (e) { aviso(e.message, 'error'); }
+    pintarBanners($('#banners', v));
+  }
+
+  async function pintarBanners(caja) {
+    if (!caja) return;
+    const partes = [];
+    try {
+      const ahora = new Date();
+      const rs = await API.reuniones(ahora, new Date(ahora.getTime() + 8 * 86400e3));
+      const g = rs[0];
+      if (g) {
+        const enCurso = new Date(g.inicio) <= ahora;
+        const org = g.organizador_id === S.yo.id || S.yo.rol === 'admin';
+        partes.push(`<a class="banner ${enCurso ? 'vivo' : ''}" href="#/reuniones">${ic('grupo')}<span><b>${enCurso ? 'Reunión en curso' : 'Próxima reunión de grupo'}:</b> ${esc(g.tema)}
+          <span class="tenue">· ${esc(fechaCorta(g.inicio))}, ${hora(g.inicio)}–${hora(g.fin)}${g.lugar ? ' · ' + esc(g.lugar) : ''}</span>
+          ${enCurso ? (org ? ' <u>Mostrar el QR</u>' : ' <span class="tenue">— escanee el QR que muestra el organizador</span>') : ''}</span></a>`);
+      }
+    } catch (e) {}
+    if (esAprobador()) {
+      try {
+        const sol = (await API.solicitudesPendientes()).filter(ladoPendiente);
+        if (sol.length) partes.push(`<a class="banner alerta" href="#/avisos">${ic('alerta')}<span><b>${sol.length === 1 ? 'Hay 1 solicitud' : `Hay ${sol.length} solicitudes`} entre laboratorios esperando su aprobación.</b> <u>Revisar</u></span></a>`);
+      } catch (e) {}
+    }
+    caja.innerHTML = partes.join('');
   }
 
   function pintarLineaTiempo(caja, fecha, filtro, reservas) {
@@ -334,8 +388,8 @@
       <div class="lt-eje"><div></div><div class="horas">${horas.map(m => `<span style="left:${pct(m)}">${String(m / 60).padStart(2, '0')}:00</span>`).join('')}</div></div>
       ${eqs.map(e => {
         const rs = reservas.filter(x => x.equipo_id === e.id);
-        const bloqueada = e.estado !== 'Disponible' || !puedeUsar(e);
-        const motivo = e.estado !== 'Disponible' ? e.estado : 'Solo ' + nombreLab(e.laboratorio);
+        const bloqueada = e.estado !== 'Disponible';
+        const motivo = e.estado;
         return `<div class="lt-fila">
           <div class="lt-equipo"><span class="punto p${e.prioridad}" title="Prioridad ${PRIORIDAD[e.prioridad]}"></span>
             <div class="txt"><div class="n" title="${esc(e.nombre)}">${esc(e.nombre)}</div><div class="c">${esc(e.codigo)} · ${esc(e.laboratorio ? e.laboratorio : 'Compartido')}${(() => { const n = (S.obsPend || []).filter(o => o.equipo_id === e.id).length; return n ? ` · <a class="obs-aviso" href="#/observaciones?equipo=${e.id}" title="${n} observación(es) pendiente(s)">${ic('alerta')}${n}</a>` : ''; })()}</div></div></div>
@@ -346,8 +400,8 @@
             ${rs.map(x => {
               const a = Math.max(U.min(U.horaLima(x.inicio)), ini), b = Math.min(U.min(U.horaLima(x.fin)) || 1440, fin);
               const mia = x.usuario_id === S.yo.id;
-              return `<button type="button" class="lt-barra ${mia ? 'mia' : ''}" data-res="${x.id}" style="left:${pct(a)};width:calc(${((b - a) / span * 100).toFixed(3)}% - 2px)"
-                title="${esc(x.usuario_nombre)} · ${hora(x.inicio)}–${hora(x.fin)}&#10;${esc(x.uso)}">
+              return `<button type="button" class="lt-barra ${mia ? 'mia' : ''} ${x.estado === 'Pendiente' ? 'pend' : ''}" data-res="${x.id}" style="left:${pct(a)};width:calc(${((b - a) / span * 100).toFixed(3)}% - 2px)"
+                title="${x.estado === 'Pendiente' ? 'Solicitud pendiente · ' : ''}${esc(x.usuario_nombre)} · ${hora(x.inicio)}–${hora(x.fin)}&#10;${esc(x.uso)}">
                 <span>${esc(mia ? 'Usted' : primerNombre(x.usuario_nombre))}</span>${b - a >= 150 ? `<span class="h">${hora(x.inicio)}–${hora(x.fin)}</span>` : ''}</button>`;
             }).join('')}
           </div></div>`;
@@ -389,7 +443,7 @@
     if (!rs.length) { caja.innerHTML = '<div class="vacio">No tiene reservas próximas.</div>'; return; }
     caja.innerHTML = rs.map(x => `<button type="button" class="item" data-res="${x.id}" style="border:0;text-align:left;cursor:pointer;width:100%">
       ${bloqueFecha(x.inicio)}<div class="cuerpo"><div class="t">${esc(x.equipo_nombre)}</div>
-      <div class="s num">${hora(x.inicio)}–${hora(x.fin)} · <span style="text-transform:capitalize">${fmt(x.inicio, { weekday: 'long' })}</span></div></div></button>`).join('');
+      <div class="s num">${hora(x.inicio)}–${hora(x.fin)} · <span style="text-transform:capitalize">${fmt(x.inicio, { weekday: 'long' })}</span></div>${chipEstado(x)}</div></button>`).join('');
     $$('[data-res]', caja).forEach(b => b.addEventListener('click', () => detalleReserva(rs.find(x => x.id == b.dataset.res), () => render())));
   }
   function pintarPresentes(caja, ps) {
@@ -451,15 +505,16 @@
   function textoReglas() {
     const s = semanaActual();
     if (S.yo.rol === 'admin') return `<b>Administrador:</b> sin límite de cupos. Las reservas siguen siendo por turno completo.`;
-    return s.esDomingo
+    return (s.esDomingo
       ? `<b>Hoy es domingo, día de planificación.</b> Puede reservar hasta ${R('max_turnos_equipo_semana')} turnos de un mismo equipo en la semana, máximo ${R('dom_max_turnos_equipo_dia')} por día, y hasta ${R('dom_max_equipos_turno')} equipos en un mismo turno.`
-      : `<b>De lunes a sábado</b> puede agregar 1 turno por equipo al día (máximo ${R('max_turnos_equipo_semana')} por equipo en la semana) y hasta ${R('sem_max_equipos_turno')} equipos en un mismo turno. <span class="tenue">El domingo, día de planificación, los cupos son mayores.</span>`;
+      : `<b>De lunes a sábado</b> puede agregar 1 turno por equipo al día (máximo ${R('max_turnos_equipo_semana')} por equipo en la semana) y hasta ${R('sem_max_equipos_turno')} equipos en un mismo turno. <span class="tenue">El domingo, día de planificación, los cupos son mayores.</span>`) + ` <span class="tenue">Solo se puede cancelar o cambiar una reserva hasta 24 horas antes del turno.</span>`;
   }
 
   /* ================= RESERVAS: detalle / crear / editar ================= */
   async function nuevaReserva(e, fecha, turnoNum, alGuardar, existente) {
     const s = semanaActual(), admin = S.yo.rol === 'admin';
-    const disponibles = S.equipos.filter(x => x.estado === 'Disponible' && puedeUsar(x));
+    const disponibles = S.equipos.filter(x => x.estado === 'Disponible')
+      .sort((a, b) => requiereAprobacion(a) - requiereAprobacion(b) || a.prioridad - b.prioridad || a.nombre.localeCompare(b.nombre));
     let semana = [];
     try { semana = await API.reservas(U.enLima(admin ? U.sumarDias(s.dom, -7) : s.dom, '00:00'), U.enLima(U.sumarDias(s.dom, admin ? 35 : 7), '00:00')); } catch (ex) { aviso(ex.message, 'error'); }
     const mias = semana.filter(x => x.usuario_id === S.yo.id);
@@ -470,7 +525,8 @@
       cuerpo: `
         <div class="reglas-caja">${textoReglas()}</div>
         <label class="campo"><span>Equipo</span>
-          <select name="equipo">${disponibles.map(x => `<option value="${x.id}" ${x.id === e.id ? 'selected' : ''}>${esc(x.nombre)} (${esc(x.codigo)})</option>`).join('')}</select></label>
+          <select name="equipo">${disponibles.map(x => `<option value="${x.id}" ${x.id === e.id ? 'selected' : ''}>${esc(x.nombre)} (${esc(x.codigo)})${requiereAprobacion(x) ? ' · ' + esc(x.laboratorio) + ', requiere aprobación' : ''}</option>`).join('')}</select></label>
+        <div class="aviso-lab oculto"></div>
         <div class="rejilla-2">
           <label class="campo"><span>Día</span>
             ${admin ? `<input type="date" name="fecha" value="${fecha || s.hoy}">`
@@ -494,7 +550,9 @@
           if (cambia) { const m = revisarCupos(mias, eq, fe, t, existente && existente.id); if (m) throw new Error(m); }
           const datos = { equipo_id: eq.id, inicio: U.enLima(fe, U.hm(t.inicio)), fin: U.enLima(fe, U.hm(t.fin)), uso };
           if (existente) await API.actualizarReserva(existente.id, datos); else await API.crearReserva(datos);
-          aviso(existente ? 'Reserva actualizada' : `Reserva registrada: ${eq.nombre}, ${diaNombre(fe).toLowerCase()}, ${U.hm(t.inicio)}–${U.hm(t.fin)}`, 'ok');
+          const pend = requiereAprobacion(eq) && (!existente || cambia);
+          aviso(pend ? `Solicitud enviada: ${eq.nombre}, ${diaNombre(fe).toLowerCase()}. Queda pendiente hasta que la aprueben los encargados del ${eq.laboratorio} y del ${S.yo.laboratorio}.`
+            : existente ? 'Reserva actualizada' : `Reserva registrada: ${eq.nombre}, ${diaNombre(fe).toLowerCase()}, ${U.hm(t.inicio)}–${U.hm(t.fin)}`, 'ok');
           alGuardar && alGuardar();
         } }
       ],
@@ -516,6 +574,10 @@
           const n = mias.filter(x => x.equipo_id === eq.id && (!existente || x.id !== existente.id) && U.fechaLima(new Date(x.inicio)) >= s.dom && U.fechaLima(new Date(x.inicio)) <= s.sab).length;
           info.textContent = admin ? `Horario del equipo: ${U.hm(eq.hora_inicio)} a ${U.hm(eq.hora_fin)}.`
             : `Esta semana usted tiene ${n} de ${R('max_turnos_equipo_semana')} turnos posibles de este equipo.${elegido ? '' : ' No quedan turnos libres ese día.'}`;
+          const al = f.querySelector('.aviso-lab');
+          al.classList.toggle('oculto', !requiereAprobacion(eq));
+          al.innerHTML = requiereAprobacion(eq) ? `${ic('alerta')}<span>Este equipo es del <b>${esc(nombreLab(eq.laboratorio))}</b> y usted está en el ${esc(nombreLab(S.yo.laboratorio))}. Su reserva quedará como <b>solicitud pendiente</b> hasta que la aprueben un encargado del ${esc(eq.laboratorio)} y uno del ${esc(S.yo.laboratorio)}${S.yo.rol !== 'usuario' ? ' (su parte se aprueba sola, por ser encargado)' : ''}.</span>` : '';
+          const bt = f.querySelector('footer .btn:not(.sec)'); if (bt && !existente) bt.textContent = requiereAprobacion(eq) ? 'Enviar solicitud' : 'Reservar';
         };
         llenar(turnoNum || (existente && turnoDe(existente.inicio, existente.fin) || {}).numero);
         sEq.addEventListener('change', () => llenar());
@@ -529,12 +591,20 @@
     if (!x) return;
     const mia = x.usuario_id === S.yo.id, admin = S.yo.rol === 'admin';
     const futura = new Date(x.fin) > new Date();
+    const pend = x.estado === 'Pendiente';
     const acciones = [];
-    if ((mia || admin) && (futura || admin)) acciones.push({ texto: 'Cancelar reserva', clase: 'peligro izq', accion: async () => {
-      if (!await confirmar('Cancelar reserva', `¿Cancelar la reserva de <b>${esc(x.equipo_nombre)}</b> del ${fechaCorta(x.inicio)}, ${hora(x.inicio)}–${hora(x.fin)}?${!mia ? `<br><br>Pertenece a ${esc(x.usuario_nombre)}.` : ''}`, 'Sí, cancelar', 'peligro')) return false;
-      await API.cancelarReserva(x.id); aviso('Reserva cancelada', 'ok'); alCambiar && alCambiar();
+    if (pend && futura && puedeResolver(x)) {
+      acciones.push({ texto: 'Rechazar', clase: 'peligro izq', accion: () => { setTimeout(() => rechazarSolicitud(x, alCambiar), 0); } });
+      if (ladoPendiente(x)) acciones.push({ texto: `${ic('ok')} Aprobar`, accion: async () => {
+        await API.resolverSolicitud(x.id, true); aviso('Aprobación registrada', 'ok'); alCambiar && alCambiar();
+      } });
+    }
+    if (puedeCancelar(x)) acciones.push({ texto: pend && mia ? 'Retirar solicitud' : 'Cancelar reserva', clase: 'peligro' + (acciones.length ? '' : ' izq'), accion: async () => {
+      if (!await confirmar(pend && mia ? 'Retirar solicitud' : 'Cancelar reserva', `¿${pend && mia ? 'Retirar la solicitud' : 'Cancelar la reserva'} de <b>${esc(x.equipo_nombre)}</b> del ${fechaCorta(x.inicio)}, ${hora(x.inicio)}–${hora(x.fin)}?${!mia ? `<br><br>Pertenece a ${esc(x.usuario_nombre)}.` : ''}<br><br><span class="tenue">Se publicará un aviso para que todos sepan que el turno quedó libre.</span>`, 'Sí, cancelar', 'peligro')) return false;
+      await API.cancelarReserva(x.id); aviso(pend && mia ? 'Solicitud retirada' : 'Reserva cancelada', 'ok'); alCambiar && alCambiar();
     } });
-    if ((mia || admin) && futura) acciones.push({ texto: `${ic('editar')} Editar`, clase: 'sec', accion: () => {
+    const puedeMover = futura && (admin || (mia && (pend || new Date() < plazoCancelar(x))));
+    if (puedeMover) acciones.push({ texto: `${ic('editar')} Editar`, clase: 'sec', accion: () => {
       const e = S.equipos.find(q => q.id === x.equipo_id);
       const t = turnoDe(x.inicio, x.fin);
       setTimeout(() => nuevaReserva(e, U.fechaLima(new Date(x.inicio)), t && t.numero, alCambiar, x), 0);
@@ -549,17 +619,32 @@
           ${t ? `<div class="tenue">${esc(t.nombre)}</div>` : ''}
         </div>
         <div><div class="tenue" style="font-size:.9rem">Reservado por</div><div style="font-weight:700">${esc(x.usuario_nombre)}${x.supervisor ? ` <span class="tenue" style="font-weight:500">(${esc(x.supervisor)})</span>` : ''}</div></div>
-        <div><div class="tenue" style="font-size:.9rem">Uso</div><div style="overflow-wrap:anywhere">${esc(x.uso)}</div></div>`,
+        <div><div class="tenue" style="font-size:.9rem">Uso</div><div style="overflow-wrap:anywhere">${esc(x.uso)}</div></div>
+        ${pend ? `<div class="aviso-lab">${ic('alerta')}<span><b>Solicitud pendiente.</b> ${esc(x.usuario_nombre)} es del ${esc(nombreLab(x.usuario_laboratorio))} y el equipo pertenece al ${esc(nombreLab(x.equipo_laboratorio))}. Necesita la aprobación de un encargado de cada laboratorio.</span></div>${estadoAprobacion(x)}` : ''}
+        ${!pend && x.aprobada_por_nombre ? `<div class="tenue" style="font-size:.9rem">Solicitud entre laboratorios aprobada por ${esc(x.aprobada_por_nombre)} y ${esc(x.aprobada_origen_por_nombre || '—')}.</div>` : ''}
+        ${mia && futura && !pend && !puedeCancelar(x) && !admin ? `<div class="tenue" style="font-size:.9rem">${ic('reloj')} El plazo para cancelar o cambiar esta reserva venció el ${fechaCorta(plazoCancelar(x))} a las ${hora(plazoCancelar(x))} (24 horas antes).</div>` : ''}
+        ${mia && futura && !pend && puedeCancelar(x) && !admin ? `<div class="tenue" style="font-size:.9rem">Puede cancelarla o cambiarla hasta el ${fechaCorta(plazoCancelar(x))} a las ${hora(plazoCancelar(x))}.</div>` : ''}`,
       acciones
     });
   }
 
+  function rechazarSolicitud(x, alCambiar) {
+    modal({ titulo: 'Rechazar solicitud', cuerpo: `<p>${esc(x.usuario_nombre)} solicita <b>${esc(x.equipo_nombre)}</b> el ${fechaCorta(x.inicio)}, ${hora(x.inicio)}–${hora(x.fin)}.</p>
+      <label class="campo"><span>Motivo (opcional, se publicará en el aviso)</span><input type="text" name="motivo" maxlength="200" placeholder="Ej.: El equipo estará en calibración"></label>
+      <div class="error error-modal oculto"></div>`,
+      acciones: [{ texto: 'Volver', clase: 'sec' }, { texto: 'Rechazar solicitud', clase: 'peligro', accion: async f => {
+        await API.resolverSolicitud(x.id, false, f.querySelector('[name=motivo]').value.trim()); aviso('Solicitud rechazada', 'ok'); alCambiar && alCambiar();
+      } }] });
+  }
+
   /* ================= RESERVAR (calendario por turnos) ================= */
   function vistaReservar(r) {
-    const usables = S.equipos.filter(puedeUsar);
-    const sel = usables.find(e => e.id == r.q.equipo) || usables.find(e => e.estado === 'Disponible') || usables[0];
-    const grupos = [1, 2, 3].map(p => [p, usables.filter(e => e.prioridad === p)]).filter(g => g[1].length);
-    const titulos = { 1: 'Prioridad alta · más usados', 2: 'Prioridad media', 3: 'Prioridad baja' };
+    const usables = S.equipos;
+    const propios = usables.filter(e => !requiereAprobacion(e)), ajenos = usables.filter(requiereAprobacion);
+    const sel = usables.find(e => e.id == r.q.equipo) || propios.find(e => e.estado === 'Disponible') || usables[0];
+    const grupos = [1, 2, 3].map(p => [p, propios.filter(e => e.prioridad === p)]).filter(g => g[1].length);
+    if (ajenos.length) grupos.push(['otro', ajenos]);
+    const titulos = { 1: 'Prioridad alta · más usados', 2: 'Prioridad media', 3: 'Prioridad baja', otro: 'Otro laboratorio · requiere aprobación' };
     const s = semanaActual(), admin = S.yo.rol === 'admin';
     const v = shell('reservar', 'Reservar equipo', `Semana del ${diaNombre(s.dom).toLowerCase()} al ${diaNombre(s.sab).toLowerCase()}`, `
       <div class="reservar">
@@ -578,9 +663,10 @@
             <div><h2>${esc(sel.nombre)}</h2>
             <div class="datos">${esc(sel.codigo)} · ${esc(nombreLab(sel.laboratorio))} · <span id="mi-cupo"></span></div></div>
             <button class="btn" data-nueva>${ic('mas')} Nueva reserva</button></header>
+            ${requiereAprobacion(sel) ? `<div class="aviso-lab">${ic('alerta')}<span>Este equipo es del <b>${esc(nombreLab(sel.laboratorio))}</b>. Sus reservas quedarán como <b>solicitud pendiente</b> hasta que las aprueben un encargado del ${esc(sel.laboratorio)} y uno del ${esc(S.yo.laboratorio)}.</span></div>` : ''}
             <div class="reglas-caja">${textoReglas()}</div>
             <div id="obs-equipo"></div>
-            <p class="tenue" style="font-size:.9rem;margin-bottom:10px">Toque un turno libre del calendario para reservarlo. Sus reservas aparecen en coral.</p>
+            <p class="tenue" style="font-size:.9rem;margin-bottom:10px">Toque un turno libre del calendario para reservarlo. Sus reservas aparecen en coral; las solicitudes pendientes, rayadas.</p>
             <div id="calendario"></div>` : '<div class="vacio">Seleccione un equipo.</div>'}
         </section>
       </div>`);
@@ -649,8 +735,8 @@
           if (cupo) cupo.textContent = admin ? `de ${U.hm(sel.hora_inicio)} a ${U.hm(sel.hora_fin)}` : `usted tiene ${mias} de ${R('max_turnos_equipo_semana')} turnos esta semana`;
           ok(deEq.map(x => {
             const mia = x.usuario_id === S.yo.id;
-            return { id: String(x.id), start: x.inicio, end: x.fin, title: (mia ? 'Usted' : x.usuario_nombre) + (x.supervisor ? ` (${x.supervisor})` : ''),
-              classNames: [mia ? 'ev-mia' : 'ev-otro'], extendedProps: { r: x } };
+            return { id: String(x.id), start: x.inicio, end: x.fin, title: (x.estado === 'Pendiente' ? 'Pendiente · ' : '') + (mia ? 'Usted' : x.usuario_nombre) + (x.supervisor ? ` (${x.supervisor})` : ''),
+              classNames: [mia ? 'ev-mia' : 'ev-otro', x.estado === 'Pendiente' ? 'ev-pend' : ''], extendedProps: { r: x } };
           }));
         } catch (e) { aviso(e.message, 'error'); mal(e); }
       },
@@ -668,7 +754,9 @@
   async function vistaMisReservas() {
     const v = shell('mis-reservas', 'Mis reservas', '', `
       <div class="panel-rejilla" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
-        <section class="tarjeta"><header><h2>Próximas</h2><a class="btn chico" href="#/reservar">${ic('mas')} Reservar</a></header><div class="lista" id="prox"><div class="vacio">Cargando…</div></div></section>
+        <section class="tarjeta"><header><h2>Próximas</h2><a class="btn chico" href="#/reservar">${ic('mas')} Reservar</a></header>
+          <p class="tenue" style="font-size:.9rem;margin:-4px 0 12px">Puede cancelar o cambiar una reserva hasta 24 horas antes del turno. Las solicitudes pendientes se pueden retirar en cualquier momento.</p>
+          <div class="lista" id="prox"><div class="vacio">Cargando…</div></div></section>
         <section class="tarjeta"><header><h2>Últimos 30 días</h2></header><div class="lista" id="pas"><div class="vacio">Cargando…</div></div></section>
       </div>`);
     const hoy = U.fechaLima();
@@ -677,7 +765,7 @@
       const ahora = new Date();
       const item = x => `<button type="button" class="item" data-res="${x.id}" style="border:0;text-align:left;cursor:pointer;width:100%">${bloqueFecha(x.inicio)}
         <div class="cuerpo"><div class="t">${esc(x.equipo_nombre)}</div><div class="s num"><span style="text-transform:capitalize">${fmt(x.inicio, { weekday: 'long' })}</span> · ${hora(x.inicio)}–${hora(x.fin)} · ${esc(x.equipo_laboratorio || 'Compartido')}</div>
-        <div class="uso">${esc(x.uso)}</div></div></button>`;
+        <div class="uso">${esc(x.uso)}</div>${chipEstado(x)}</div></button>`;
       const prox = rs.filter(x => new Date(x.fin) > ahora), pas = rs.filter(x => new Date(x.fin) <= ahora).reverse();
       $('#prox', v).innerHTML = prox.length ? prox.map(item).join('') : '<div class="vacio">No tiene reservas próximas. <a href="#/reservar">Reservar un equipo</a>.</div>';
       $('#pas', v).innerHTML = pas.length ? pas.map(item).join('') : '<div class="vacio">Sin reservas en los últimos 30 días.</div>';
@@ -800,6 +888,296 @@
     const s = $('#k-salir'); if (s) s.addEventListener('click', async () => { if (await confirmar('Cerrar sesión', 'La pantalla dejará de mostrar el código QR.', 'Cerrar sesión')) { await API.salir(); S.yo = null; location.hash = '#/panel'; render(); } });
   }
 
+  function hojaReuniones(reus, asis) {
+    const filas = [];
+    reus.forEach(g => {
+      const a = asis.filter(x => x.reunion_id === g.id);
+      const base = { Fecha: U.fechaLima(new Date(g.inicio)), Inicio: hora(g.inicio), Fin: hora(g.fin), Tema: g.tema, Lugar: g.lugar || '', Organizador: g.organizador_nombre };
+      if (!a.length) filas.push({ ...base, Asistente: '(sin asistentes registrados)', 'Código': '', Laboratorio: '', 'Hora de marca': '' });
+      a.forEach(x => filas.push({ ...base, Asistente: x.nombre, 'Código': x.codigo, Laboratorio: x.laboratorio, 'Hora de marca': hora(x.momento) }));
+    });
+    const ws = XLSX.utils.json_to_sheet(filas.length ? filas : [{ Fecha: '', Tema: 'Sin reuniones en este periodo' }]);
+    ws['!cols'] = [11, 7, 7, 40, 18, 26, 30, 10, 11, 12].map(w => ({ wch: w }));
+    return ws;
+  }
+
+  /* ================= REUNIONES DE GRUPO ================= */
+  const enVentanaQR = g => { const t = Date.now(); return t >= new Date(g.inicio).getTime() - 15 * 60e3 && t <= new Date(g.fin).getTime(); };
+
+  async function vistaReuniones(r) {
+    const hoy = U.fechaLima(), admin = S.yo.rol === 'admin';
+    const v = shell('reuniones', 'Reuniones de grupo', '', `
+      <div class="panel-rejilla">
+        <div class="columna">
+          <section class="tarjeta"><header><h2>Próximas</h2></header><div class="lista" id="g-prox"><div class="vacio">Cargando…</div></div></section>
+          <section class="tarjeta"><header><div><h2>Anteriores</h2><div class="sub">Últimos 60 días</div></div></header><div class="lista" id="g-pas"><div class="vacio">Cargando…</div></div></section>
+        </div>
+        <section class="tarjeta obs-form">
+          <h2 style="margin-bottom:12px">Programar reunión</h2>
+          <form class="lista" id="g-form" novalidate>
+            <label class="campo"><span>Tema</span><input type="text" name="tema" maxlength="150" placeholder="Ej.: Avance de tesis y revisión de resultados"></label>
+            <label class="campo"><span>Día</span><input type="date" name="fecha" value="${hoy}" min="${hoy}"></label>
+            <div class="rejilla-2">
+              <label class="campo"><span>Hora de inicio</span><input type="time" name="ini" value="16:00" step="900"></label>
+              <label class="campo"><span>Hora de fin</span><input type="time" name="fin" value="17:00" step="900"></label>
+            </div>
+            <label class="campo"><span>Lugar (opcional)</span><input type="text" name="lugar" maxlength="80" placeholder="Ej.: Laboratorio 2, sala de reuniones, Zoom"></label>
+            <div class="error oculto" role="alert"></div>
+            <button class="btn" type="submit">${ic('grupo')} Programar reunión</button>
+            <p class="tenue" style="font-size:.88rem">Todos verán un aviso. Durante la reunión, usted mostrará un <b>código QR propio</b> desde su laptop o el proyector, y los asistentes lo escanean para registrar su asistencia. El QR se activa 15 minutos antes del inicio.</p>
+          </form>
+        </section>
+      </div>`);
+
+    let lista = [];
+    const tarjeta = (g, futura) => {
+      const org = g.organizador_id === S.yo.id || admin;
+      const ahora = new Date(), enCurso = new Date(g.inicio) <= ahora && new Date(g.fin) >= ahora;
+      return `<article class="reunion ${enCurso ? 'vivo' : ''}">
+        ${bloqueFecha(g.inicio)}
+        <div class="cuerpo">
+          <div class="fila" style="justify-content:space-between;gap:8px"><div class="t">${esc(g.tema)}</div>${enCurso ? '<span class="chip verde">En curso</span>' : ''}</div>
+          <div class="s num">${may(fmt(g.inicio, { weekday: 'long' }))} · ${hora(g.inicio)}–${hora(g.fin)}${g.lugar ? ' · ' + esc(g.lugar) : ''}</div>
+          <div class="s tenue">Organiza ${esc(g.organizador_nombre)} · ${g.asistentes} asistente${g.asistentes === 1 ? '' : 's'}</div>
+          <div class="fila acciones-obs" style="margin-top:6px">
+            ${futura && org ? `<a class="btn chico ${enVentanaQR(g) ? '' : 'sec'}" href="#/reunion-qr?id=${g.id}">${ic('asistencia')} ${enVentanaQR(g) ? 'Mostrar QR' : 'QR de la reunión'}</a>` : ''}
+            ${(org || g.asistentes) ? `<button class="btn sec chico" data-ver="${g.id}">Asistentes</button>` : ''}
+            ${futura && org && new Date(g.inicio) > ahora ? `<button class="btn sec chico" data-editar="${g.id}">${ic('editar')} Editar</button>` : ''}
+            ${futura && org ? `<button class="btn peligro chico" data-cancelar="${g.id}">Cancelar</button>` : ''}
+          </div>
+          ${futura && !org && enCurso ? '<p class="tenue" style="font-size:.88rem;margin-top:4px">Escanee el QR que muestra el organizador para registrar su asistencia.</p>' : ''}
+        </div></article>`;
+    };
+
+    async function cargar() {
+      try {
+        const ahora = new Date();
+        lista = await API.reuniones(U.enLima(U.sumarDias(hoy, -60), '00:00'), null);
+        const prox = lista.filter(g => new Date(g.fin) >= ahora), pas = lista.filter(g => new Date(g.fin) < ahora).reverse();
+        $('#g-prox', v).innerHTML = prox.length ? prox.map(g => tarjeta(g, true)).join('') : '<div class="vacio">No hay reuniones programadas.</div>';
+        $('#g-pas', v).innerHTML = pas.length ? pas.map(g => tarjeta(g, false)).join('') : '<div class="vacio">Sin reuniones en los últimos 60 días.</div>';
+        $$('[data-ver]', v).forEach(b => b.addEventListener('click', () => verAsistentes(lista.find(g => g.id == b.dataset.ver))));
+        $$('[data-editar]', v).forEach(b => b.addEventListener('click', () => editarReunion(lista.find(g => g.id == b.dataset.editar))));
+        $$('[data-cancelar]', v).forEach(b => b.addEventListener('click', async () => {
+          const g = lista.find(x => x.id == b.dataset.cancelar);
+          if (!await confirmar('Cancelar reunión', `¿Cancelar la reunión <b>${esc(g.tema)}</b> del ${fechaCorta(g.inicio)}, ${hora(g.inicio)}–${hora(g.fin)}? Se publicará un aviso para todos.`, 'Sí, cancelar', 'peligro')) return;
+          try { await API.cancelarReunion(g.id); aviso('Reunión cancelada', 'ok'); cargar(); } catch (e) { aviso(e.message, 'error'); }
+        }));
+      } catch (e) { $('#g-prox', v).innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+    }
+
+    const datosForm = (f) => {
+      const tema = f.querySelector('[name=tema]').value.trim(), fe = f.querySelector('[name=fecha]').value;
+      const a = f.querySelector('[name=ini]').value, b = f.querySelector('[name=fin]').value, lugar = f.querySelector('[name=lugar]').value.trim();
+      if (tema.length < 3) throw new Error('Escriba el tema de la reunión.');
+      if (!fe || !a || !b) throw new Error('Indique el día y las horas de inicio y fin.');
+      if (b <= a) throw new Error('La hora de fin debe ser posterior a la de inicio.');
+      return { tema, lugar, inicio: U.enLima(fe, a), fin: U.enLima(fe, b) };
+    };
+
+    const f = $('#g-form', v), err = $('.error', f);
+    f.addEventListener('submit', async e => {
+      e.preventDefault(); err.classList.add('oculto');
+      const b = $('button[type=submit]', f); b.disabled = true;
+      try {
+        const d = datosForm(f);
+        await API.crearReunion(d);
+        f.tema.value = ''; f.lugar.value = '';
+        aviso(`Reunión programada: ${d.tema}, ${fechaCorta(d.inicio)} ${hora(d.inicio)}`, 'ok'); cargar();
+      } catch (ex) { err.textContent = ex.message; err.classList.remove('oculto'); }
+      finally { b.disabled = false; }
+    });
+
+    function editarReunion(g) {
+      modal({ titulo: 'Editar reunión', cuerpo: `
+        <label class="campo"><span>Tema</span><input type="text" name="tema" maxlength="150" value="${esc(g.tema)}"></label>
+        <label class="campo"><span>Día</span><input type="date" name="fecha" value="${U.fechaLima(new Date(g.inicio))}" min="${hoy}"></label>
+        <div class="rejilla-2">
+          <label class="campo"><span>Hora de inicio</span><input type="time" name="ini" value="${U.horaLima(g.inicio)}" step="900"></label>
+          <label class="campo"><span>Hora de fin</span><input type="time" name="fin" value="${U.horaLima(g.fin)}" step="900"></label>
+        </div>
+        <label class="campo"><span>Lugar (opcional)</span><input type="text" name="lugar" maxlength="80" value="${esc(g.lugar || '')}"></label>
+        <div class="error error-modal oculto"></div>`,
+        acciones: [{ texto: 'Volver', clase: 'sec' }, { texto: 'Guardar cambios', accion: async m => {
+          await API.actualizarReunion(g.id, datosForm(m)); aviso('Reunión actualizada', 'ok'); cargar();
+        } }] });
+    }
+
+    async function verAsistentes(g) {
+      let a = [];
+      try { a = await API.asistenciaReunion([g.id]); } catch (e) { return aviso(e.message, 'error'); }
+      modal({ titulo: g.tema, ancho: false, cuerpo: `
+        <p class="tenue">${fechaLarga(g.inicio)} · ${hora(g.inicio)}–${hora(g.fin)}${g.lugar ? ' · ' + esc(g.lugar) : ''}</p>
+        ${a.length ? `<div class="tabla-caja"><table class="tabla"><thead><tr><th>Asistente</th><th>Lab.</th><th>Marcó</th></tr></thead><tbody>
+          ${a.map(x => `<tr><td>${esc(x.nombre)} <span class="tenue">${esc(x.codigo)}</span></td><td>${esc(x.laboratorio === 'AMBOS' ? 'Ambos' : x.laboratorio)}</td><td class="num">${hora(x.momento)}</td></tr>`).join('')}</tbody></table></div>`
+          : '<div class="vacio">Nadie ha registrado asistencia todavía.</div>'}`,
+        acciones: [
+          ...(a.length ? [{ texto: `${ic('descargar')} Descargar Excel`, clase: 'sec izq', accion: async () => {
+            await cargarXLSX(); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, hojaReuniones([g], a), 'Asistencia');
+            XLSX.writeFile(wb, `reunion_${U.fechaLima(new Date(g.inicio))}.xlsx`); return false; } }] : []),
+          { texto: 'Cerrar' }] });
+    }
+    cargar();
+  }
+
+  async function vistaQRReunion(r) {
+    const id = +r.q.id;
+    let g;
+    try { g = (await API.reuniones(null, null)).find(x => x.id === id); } catch (e) {}
+    if (!g) { aviso('La reunión no existe o fue cancelada.', 'error'); return ir('#/reuniones'); }
+    $app.innerHTML = `<div class="kiosco">
+      <div class="lado-qr"><div class="qr-caja"><div id="qr" aria-label="Código QR de asistencia a la reunión"></div><div class="progreso"><i style="width:100%"></i></div>
+        <div class="tenue" id="qr-estado" style="font-size:.9rem;max-width:36ch;text-align:center">Generando código…</div></div></div>
+      <div class="lado-info">
+        <div class="logos"><img class="giea" src="assets/logo-giea.png" alt="GIEA"><img class="uni" src="assets/logo-uni.png" alt="Universidad Nacional de Ingeniería"></div>
+        <div><div class="tenue" style="font-size:1.05rem;font-weight:600">Reunión de grupo</div><div class="lab">${esc(g.tema)}</div>
+          <div class="tenue" style="font-size:1.1rem">${fechaLarga(g.inicio)} · ${hora(g.inicio)}–${hora(g.fin)}${g.lugar ? ' · ' + esc(g.lugar) : ''}</div></div>
+        <div class="reloj" id="k-reloj"></div>
+        <p class="indic">Escanee el código con su celular para registrar su <b>asistencia a la reunión</b>.</p>
+        <div class="presentes"><h2 style="margin-bottom:8px">Asistentes · <span id="k-n">0</span></h2><div class="lista lista-asis" id="k-pres"></div></div>
+        <div class="herr">
+          <button class="btn sec chico" id="k-full">${ic('pantalla')} Pantalla completa</button>
+          <a class="btn sec chico" href="#/reuniones">Volver</a>
+        </div>
+      </div></div>`;
+    const base = location.href.split('#')[0];
+    let renueva = 0, tokenActual = '';
+    const reloj = () => { $('#k-reloj').textContent = hora(new Date());
+      const rest = Math.max(0, renueva - Date.now()); const p = $('.progreso i'); if (p) p.style.width = (rest / 600).toFixed(1) + '%'; };
+    async function refrescar() {
+      try {
+        const t = await API.qrReunionToken(id);
+        renueva = new Date(t.renueva).getTime();
+        if (t.token !== tokenActual) {
+          tokenActual = t.token;
+          const url = `${base}#/marcar-reunion?r=${id}&t=${encodeURIComponent(t.token)}`;
+          const q = qrcode(0, 'M'); q.addData(url); q.make();
+          $('#qr').innerHTML = q.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+          $('#qr svg').setAttribute('role', 'img');
+        }
+        $('#qr-estado').textContent = 'El código cambia cada minuto';
+      } catch (e) { tokenActual = ''; renueva = Date.now() + 30e3; $('#qr').innerHTML = `<div class="qr-espera">${ic('reloj')}</div>`; $('#qr-estado').textContent = e.message; }
+      try {
+        const a = await API.asistenciaReunion([id]);
+        $('#k-n').textContent = a.length;
+        $('#k-pres').innerHTML = a.length ? a.slice().reverse().map(p => `<div class="item" style="background:var(--fondo);padding:8px 10px"><span class="avatar">${esc(iniciales(p.nombre))}</span><div class="cuerpo"><div class="t">${esc(p.nombre)}</div><div class="s">${hora(p.momento)}</div></div></div>`).join('')
+          : '<div class="tenue">Todavía nadie ha marcado.</div>';
+      } catch (e) {}
+    }
+    await refrescar(); reloj();
+    S.timers.push(setInterval(reloj, 1000));
+    S.timers.push(setInterval(() => { if (Date.now() >= renueva - 1500) refrescar(); }, 5000));
+    S.timers.push(setInterval(refrescar, 20000));
+    try { if (navigator.wakeLock) { S.wake = await navigator.wakeLock.request('screen'); } } catch (e) {}
+    $('#k-full').addEventListener('click', () => { const d = document.documentElement; (d.requestFullscreen || d.webkitRequestFullscreen || (() => {})).call(d); });
+  }
+
+  async function vistaMarcarReunion(r) {
+    const id = +r.q.r, tok = r.q.t || '';
+    const v = shell('reuniones', 'Asistencia a reunión', '', `<div class="marca-resultado"><div class="vacio">Registrando…</div></div>`);
+    const caja = $('.marca-resultado', v);
+    try {
+      if (!id || !tok) throw new Error('El enlace está incompleto. Escanee el código QR que se muestra en la reunión.');
+      const res = await API.marcarReunion(id, tok);
+      caja.innerHTML = `<span class="sello">${ic('ok')}</span>
+        <h2 style="font-size:1.5rem">${res.repetido ? 'Su asistencia ya estaba registrada' : 'Asistencia registrada'}</h2>
+        <div class="hora">${hora(res.momento)}</div>
+        <p style="font-weight:600">${esc(res.tema)}</p>
+        <p class="tenue">${esc(res.nombre)}</p>
+        <a class="btn" href="#/reuniones">Ver reuniones</a>`;
+      history.replaceState(null, '', '#/marcar-hecho');
+    } catch (e) {
+      caja.innerHTML = `<span class="sello mal">${ic('alerta')}</span><h2 style="font-size:1.4rem">No se pudo registrar</h2>
+        <p>${esc(e.message)}</p><a class="btn sec" href="#/reuniones">Ver reuniones</a>`;
+    }
+  }
+
+  /* ================= AVISOS ================= */
+  const TIPOS_AVISO = {
+    cancelacion: ['cancelar', 'Cancelación', 'rojo'], cambio: ['editar', 'Cambio de reserva', 'gris'],
+    solicitud: ['alerta', 'Solicitud', 'ambar'], aprobada: ['ok', 'Aprobada', 'verde'], rechazada: ['cancelar', 'Rechazada', 'rojo'],
+    reunion: ['grupo', 'Reunión', 'azul'], reunion_cancelada: ['cancelar', 'Reunión cancelada', 'rojo']
+  };
+  function haceCuanto(d) {
+    const m = Math.round((Date.now() - new Date(d)) / 60000);
+    if (m < 1) return 'hace un momento';
+    if (m < 60) return `hace ${m} min`;
+    if (m < 24 * 60) return `hace ${Math.round(m / 60)} h`;
+    return `${fechaCorta(d)}, ${hora(d)}`;
+  }
+
+  async function vistaAvisos(r) {
+    const filtro = r.q.tipo || 'todos';
+    const vistoAntes = S.yo.avisos_vistos || new Date(0).toISOString();
+    const grupos = [['todos', 'Todos'], ['reservas', 'Reservas'], ['solicitudes', 'Solicitudes'], ['reuniones', 'Reuniones']];
+    const enGrupo = (t, g) => g === 'todos' || (g === 'reservas' && ['cancelacion', 'cambio'].includes(t)) ||
+      (g === 'solicitudes' && ['solicitud', 'aprobada', 'rechazada'].includes(t)) || (g === 'reuniones' && t.startsWith('reunion'));
+    const v = shell('avisos', 'Avisos', '', `
+      <div class="columna" style="max-width:860px">
+        ${esAprobador() ? `<section class="tarjeta" id="sol"><header><div><h2>Solicitudes por aprobar</h2><div class="sub">Reservas entre laboratorios: necesitan un encargado del laboratorio del equipo y otro del laboratorio de quien pide</div></div></header>
+          <div class="lista" id="sol-lista"><div class="vacio">Cargando…</div></div></section>` : ''}
+        <section class="tarjeta">
+          <header><div class="segmentos" role="group" aria-label="Filtrar avisos">${grupos.map(([k, t]) => `<button type="button" data-g="${k}" aria-pressed="${filtro === k}">${t}</button>`).join('')}</div></header>
+          <div class="lista" id="av-lista"><div class="vacio">Cargando…</div></div>
+        </section>
+      </div>`);
+    $$('[data-g]', v).forEach(b => b.addEventListener('click', () => ir('#/avisos?tipo=' + b.dataset.g)));
+
+    async function cargarSolicitudes() {
+      const caja = $('#sol-lista', v); if (!caja) return;
+      try {
+        const sol = (await API.solicitudesPendientes()).filter(puedeResolver)
+          .sort((a, b) => ladoPendiente(b) - ladoPendiente(a) || a.inicio.localeCompare(b.inicio));
+        caja.innerHTML = sol.length ? sol.map(x => `<article class="solicitud">
+            ${bloqueFecha(x.inicio)}
+            <div class="cuerpo"><div class="t">${esc(x.equipo_nombre)} <span class="tenue" style="font-weight:500">${esc(x.equipo_laboratorio)}</span></div>
+              <div class="s num">${may(fmt(x.inicio, { weekday: 'long' }))} · ${hora(x.inicio)}–${hora(x.fin)}</div>
+              <div class="s">${esc(x.usuario_nombre)} <span class="tenue">(${esc(x.usuario_laboratorio)}${x.supervisor ? ', ' + esc(x.supervisor) : ''})</span></div>
+              <div class="uso">${esc(x.uso)}</div>
+              ${estadoAprobacion(x)}
+              <div class="fila acciones-obs" style="margin-top:6px">${ladoPendiente(x) ? `<button class="btn chico" data-ap="${x.id}">${ic('ok')} Aprobar</button>` : `<span class="tenue" style="font-size:.88rem">Su laboratorio ya aprobó; falta el ${esc(!x.aprobada_por_nombre ? x.equipo_laboratorio : x.usuario_laboratorio)}.</span>`}<button class="btn peligro chico" data-re="${x.id}">Rechazar</button></div>
+            </div></article>`).join('') : '<div class="vacio">No hay solicitudes pendientes.</div>';
+        $$('[data-ap]', caja).forEach(b => b.addEventListener('click', async () => {
+          b.disabled = true;
+          try { await API.resolverSolicitud(+b.dataset.ap, true); aviso('Aprobación registrada', 'ok'); cargarSolicitudes(); cargarAvisos(); }
+          catch (e) { aviso(e.message, 'error'); b.disabled = false; }
+        }));
+        $$('[data-re]', caja).forEach(b => b.addEventListener('click', () => rechazarSolicitud(sol.find(x => x.id == b.dataset.re), () => { cargarSolicitudes(); cargarAvisos(); })));
+      } catch (e) { caja.innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+    }
+
+    async function cargarAvisos() {
+      const caja = $('#av-lista', v);
+      try {
+        const avs = (await API.avisos()).filter(a => enGrupo(a.tipo, filtro));
+        caja.innerHTML = avs.length ? avs.map(a => {
+          const [i, etq, color] = TIPOS_AVISO[a.tipo] || ['campana', 'Aviso', 'gris'];
+          return `<article class="aviso-item ${a.creado > vistoAntes ? 'nuevo' : ''}">
+            <span class="aviso-ic ${color}">${ic(i)}</span>
+            <div class="cuerpo"><p>${esc(a.mensaje)}</p>
+              <div class="s tenue">${etq}${a.laboratorio ? ' · ' + esc(a.laboratorio) : ''} · ${haceCuanto(a.creado)}${a.creado > vistoAntes ? ' · <b class="nuevo-txt">Nuevo</b>' : ''}</div></div>
+          </article>`;
+        }).join('') : '<div class="vacio">No hay avisos todavía.</div>';
+      } catch (e) { caja.innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+    }
+
+    await Promise.all([cargarSolicitudes(), cargarAvisos()]);
+    try { await API.marcarAvisosVistos(); S.yo.avisos_vistos = new Date().toISOString(); } catch (e) {}
+    $$('[data-insignia]').forEach(b => b.classList.add('oculto'));
+  }
+
+  /* ================= MÁS (menú del celular) ================= */
+  function vistaMas() {
+    const items = [['mis-reservas', 'Mis reservas', 'mis'], ['asistencia', 'Asistencia', 'asistencia'], ['observaciones', 'Observaciones', 'observ']];
+    if (S.yo.rol === 'admin') items.push(['admin', 'Administración', 'admin']);
+    items.push(['pin', 'Cambiar PIN', 'llave']);
+    const v = shell('mas', 'Más opciones', '', `<section class="tarjeta"><nav class="menu-mas">
+      ${items.map(([h, t, i]) => `<a href="#/${h}">${ic(i)}<span>${t}</span>${ic('der')}</a>`).join('')}
+      <a href="#" data-salir>${ic('salir')}<span>Salir</span></a></nav>
+      <p class="tenue" style="margin-top:14px;font-size:.9rem">${esc(S.yo.nombre)} · ${esc(S.yo.codigo)} · ${esc(nombreLab(S.yo.laboratorio))}</p></section>`);
+    $$('[data-salir]', v).forEach(b => b.addEventListener('click', async e => { e.preventDefault(); await API.salir(); S.yo = null; location.hash = '#/panel'; render(); }));
+  }
+
   /* ================= ADMINISTRACIÓN ================= */
   function vistaAdmin(r) {
     const tab = r.partes[1] || 'usuarios';
@@ -825,7 +1203,7 @@
       const lista = S.perfiles.filter(p => (!t || (p.nombre + ' ' + p.codigo + ' ' + (p.supervisor || '')).toLowerCase().includes(t)) && (!fl || p.laboratorio === fl || (fl === 'inactivos' && !p.activo)));
       $('#tabla-u', c).innerHTML = `<table class="tabla"><thead><tr><th>Código</th><th>Nombre</th><th>Laboratorio</th><th>Supervisor</th><th>Rol</th><th>Estado</th><th></th></tr></thead><tbody>
         ${lista.map(p => `<tr class="${p.activo ? '' : 'inactivo'}"><td><b>${esc(p.codigo)}</b></td><td>${esc(p.nombre)}</td><td>${esc(p.laboratorio === 'AMBOS' ? 'Ambos' : p.laboratorio)}</td><td>${esc(p.supervisor || '—')}</td>
-          <td>${p.rol === 'admin' ? '<span class="chip coral">Administrador</span>' : p.rol === 'kiosco' ? '<span class="chip gris">Pantalla QR</span>' : 'Usuario'}</td>
+          <td>${p.rol === 'admin' ? '<span class="chip coral">Administrador</span>' : p.rol === 'kiosco' ? '<span class="chip gris">Pantalla QR</span>' : p.rol === 'encargado' ? '<span class="chip">Encargado</span>' : 'Usuario'}</td>
           <td>${p.activo ? (p.cambiar_pin && p.rol !== 'kiosco' ? '<span class="chip ambar">PIN inicial</span>' : '<span class="chip verde">Activo</span>') : '<span class="chip gris">Inactivo</span>'}</td>
           <td class="acciones"><button class="btn sec chico" data-ed="${esc(p.codigo)}">Editar</button> <button class="btn sec chico" data-pin="${esc(p.codigo)}">Nuevo PIN</button></td></tr>`).join('')}
         </tbody></table>${!lista.length ? '<div class="vacio">Ningún usuario coincide con la búsqueda.</div>' : ''}`;
@@ -861,8 +1239,10 @@
         <div class="rejilla-2">
           <label class="campo"><span>Rol</span><select name="rol">
             <option value="usuario" ${p.rol === 'usuario' ? 'selected' : ''}>Usuario</option>
+            <option value="encargado" ${p.rol === 'encargado' ? 'selected' : ''}>Encargado de laboratorio (profesor)</option>
             <option value="admin" ${p.rol === 'admin' ? 'selected' : ''}>Administrador</option>
             <option value="kiosco" ${p.rol === 'kiosco' ? 'selected' : ''}>Pantalla QR</option></select></label>
+          <small class="tenue" style="grid-column:1/-1;margin-top:-6px">El encargado (profesor) aprueba, junto con un encargado del otro laboratorio, las reservas de equipos entre laboratorios.</small>
           <label class="campo"><span>Estado</span><select name="activo"><option value="1" ${p.activo ? 'selected' : ''}>Activo</option><option value="0" ${!p.activo ? 'selected' : ''}>Inactivo</option></select></label>
         </div>
         ${nuevo ? `<label class="campo"><span>PIN inicial (opcional)</span><input type="text" name="pin" inputmode="numeric" maxlength="8" placeholder="Vacío = se genera uno"><small>Se le pedirá cambiarlo en su primer ingreso.</small></label>` : ''}
@@ -944,7 +1324,7 @@
       </div><button class="btn sec" id="a-x">${ic('descargar')} Descargar Excel</button></header>
       <div id="a-res" style="margin-bottom:18px"></div>
       <div class="tabla-caja" id="a-t"><div class="vacio">Cargando…</div></div>
-      <p class="tenue" style="font-size:.9rem;margin-top:14px">El Excel incluye dos hojas: <b>Asistencia</b> y <b>Observaciones</b> del mismo periodo.</p></section>`;
+      <p class="tenue" style="font-size:.9rem;margin-top:14px">El Excel incluye tres hojas del mismo periodo: <b>Asistencia</b>, <b>Observaciones</b> y <b>Reuniones</b> (con quiénes asistieron a cada una).</p></section>`;
     let filas = [];
     const cargar = async () => {
       try {
@@ -964,13 +1344,17 @@
       const d0 = $('#a-d', c).value, d1 = $('#a-h', c).value, lab = $('#a-l', c).value;
       let obs = [];
       try { obs = (await API.observaciones(U.enLima(d0, '00:00'), U.enLima(U.sumarDias(d1, 1), '00:00'))).filter(o => !lab || !o.equipo_laboratorio || o.equipo_laboratorio === lab); } catch (e) { aviso(e.message, 'error'); }
-      if (!filas.length && !obs.length) return aviso('No hay asistencia ni observaciones en este periodo.');
+      let reus = [], asisR = [];
+      try { reus = (await API.reuniones(U.enLima(d0, '00:00'), U.enLima(U.sumarDias(d1, 1), '00:00'))).filter(g => U.fechaLima(new Date(g.inicio)) >= d0);
+            asisR = await API.asistenciaReunion(reus.map(g => g.id)); } catch (e) { aviso(e.message, 'error'); }
+      if (!filas.length && !obs.length && !reus.length) return aviso('No hay asistencia, observaciones ni reuniones en este periodo.');
       const datos = filas.map(f => ({ Fecha: f.fecha, 'Código': f.codigo, Nombre: f.nombre, Supervisor: f.supervisor || '', Laboratorio: f.laboratorio,
         Entrada: f.entrada ? hora(f.entrada) : '', Salida: f.salida && f.salida > (f.entrada || '') ? hora(f.salida) : '', Horas: f.horas > 0 ? Number(f.horas) : '' }));
       const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(datos);
       ws['!cols'] = [12, 10, 32, 20, 12, 9, 9, 8].map(w => ({ wch: w }));
       XLSX.utils.book_append_sheet(wb, ws, 'Asistencia');
       XLSX.utils.book_append_sheet(wb, hojaObservaciones(obs), 'Observaciones');
+      XLSX.utils.book_append_sheet(wb, hojaReuniones(reus, asisR), 'Reuniones');
       XLSX.writeFile(wb, `reporte_${d0}_a_${d1}.xlsx`);
     });
     cargar();

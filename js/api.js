@@ -45,6 +45,9 @@
       if (e && e.code === '23P01' && !/Horario ocupado|Turno ocupado|ya tiene reservado/.test(m)) return 'Otra persona acaba de reservar ese horario. Elija otro bloque.';
       if (/observaciones/i.test(m) && /schema cache|does not exist/i.test(m)) return 'Falta instalar la sección de Observaciones: ejecute actualizacion_observaciones.sql en Supabase.';
       if (/check constraint "observaciones_texto/i.test(m)) return 'Escriba la observación (mínimo 5 caracteres).';
+      if (/reuniones_sin_choque/i.test(m)) return 'Ya hay otra reunión programada en ese horario.';
+      if (/reuniones_tema_check/i.test(m)) return 'Escriba el tema de la reunión.';
+      if (/(avisos|reuniones|cancelar_reserva|resolver_solicitud)/i.test(m) && /schema cache|does not exist|Could not find/i.test(m)) return 'Falta instalar la actualización de reuniones y avisos: ejecute actualizacion_reuniones_avisos.sql en Supabase.';
       if (/row-level security|permission denied/i.test(m)) return 'No tiene permiso para esta acción.';
       if (/JWT expired|not authenticated/i.test(m)) return 'Su sesión expiró. Vuelva a ingresar.';
       return m;
@@ -95,9 +98,39 @@
         if (r.equipo_id) patch.equipo_id = r.equipo_id;
         return ok(await sb.from('reservas').update(patch).eq('id', id).select().single());
       },
-      async cancelarReserva(id) {
-        const d = ok(await sb.from('reservas').delete().eq('id', id).select());
-        if (!d.length) throw new Error('No se pudo cancelar: la reserva ya pasó o no le pertenece.');
+      async cancelarReserva(id) { ok(await sb.rpc('cancelar_reserva', { p_id: id })); },
+      async resolverSolicitud(id, aprobar, motivo) { ok(await sb.rpc('resolver_solicitud', { p_id: id, p_aprobar: aprobar, p_motivo: motivo || null })); },
+      async solicitudesPendientes() {
+        return ok(await sb.from('reservas_detalle').select('*').eq('estado', 'Pendiente').gt('fin', new Date().toISOString()).order('inicio'));
+      },
+      async avisos(limite = 150) { return ok(await sb.from('avisos').select('*').order('creado', { ascending: false }).limit(limite)); },
+      async avisosNuevos(desde) {
+        const r = await sb.from('avisos').select('id', { count: 'exact', head: true }).gt('creado', desde);
+        return r.error ? 0 : (r.count || 0);
+      },
+      async marcarAvisosVistos() { ok(await sb.rpc('marcar_avisos_vistos')); },
+      async reuniones(desde, hasta) {
+        let q = sb.from('reuniones_detalle').select('*').order('inicio');
+        if (desde) q = q.gte('fin', desde.toISOString());
+        if (hasta) q = q.lt('inicio', hasta.toISOString());
+        return ok(await q);
+      },
+      async crearReunion(g) {
+        return ok(await sb.from('reuniones').insert({ inicio: g.inicio.toISOString(), fin: g.fin.toISOString(), tema: g.tema, lugar: g.lugar || null }).select().single());
+      },
+      async actualizarReunion(id, g) {
+        const d = ok(await sb.from('reuniones').update({ inicio: g.inicio.toISOString(), fin: g.fin.toISOString(), tema: g.tema, lugar: g.lugar || null }).eq('id', id).select());
+        if (!d.length) throw new Error('Solo quien organizó la reunión o un administrador puede modificarla.');
+      },
+      async cancelarReunion(id) {
+        const d = ok(await sb.from('reuniones').delete().eq('id', id).select());
+        if (!d.length) throw new Error('Solo quien organizó la reunión o un administrador puede cancelarla, y antes de que termine.');
+      },
+      async qrReunionToken(id) { return ok(await sb.rpc('qr_reunion_token', { p_id: id })); },
+      async marcarReunion(id, token) { return ok(await sb.rpc('marcar_reunion', { p_id: id, p_token: token })); },
+      async asistenciaReunion(ids) {
+        if (!ids.length) return [];
+        return ok(await sb.from('asistencia_reunion_detalle').select('*').in('reunion_id', ids).order('momento'));
       },
       async presentes() { return ok(await sb.rpc('presentes_ahora')); },
       async marcarAsistencia(lab, token) { return ok(await sb.rpc('marcar_asistencia', { p_lab: lab, p_token: token })); },
@@ -158,14 +191,27 @@
     let seq = 1000;
     const uid = () => 'u' + (++seq);
     const labs = D.laboratorios.map(l => ({ ...l }));
-    const perfiles = D.usuarios.map(u => ({ id: uid(), activo: true, cambiar_pin: false, observaciones: null, ...u }));
+    const perfiles = D.usuarios.map(u => ({ id: uid(), activo: true, cambiar_pin: false, observaciones: null, avisos_vistos: new Date(Date.now() - 4 * 3600e3).toISOString(), ...u }));
     const pins = {}; perfiles.forEach(p => { pins[p.codigo] = p.pin; delete p.pin; });
     const equipos = D.equipos.map((e, i) => ({ id: i + 1, observaciones: null, ...e }));
-    let reservas = [], asistencia = [], observaciones = [], yo = null;
+    let reservas = [], asistencia = [], observaciones = [], avisos = [], reuniones = [], asisReu = [], yo = null;
     try { const s = sessionStorage.getItem('giea-demo-yo'); if (s) yo = perfiles.find(p => p.codigo === s) || null; } catch (e) {}
 
     const error = m => { throw new Error(m); };
     const esAdmin = () => yo && yo.rol === 'admin';
+    const puedeAprobar = lab => yo && yo.activo && ['encargado', 'admin'].includes(yo.rol) && (yo.laboratorio === lab || yo.laboratorio === 'AMBOS');
+    const otroLab = (e, p) => !!e.laboratorio && p.laboratorio !== 'AMBOS' && p.laboratorio !== e.laboratorio;
+    const DIAS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+    function descHorario(ini, fin) {
+      const f = U.fechaLima(new Date(ini)), d = new Date(f + 'T12:00:00Z');
+      const t = TURNOS_DEF.find(x => x.inicio === U.horaLima(ini) && x.fin === U.horaLima(fin));
+      const h = U.horaLima(ini) + '–' + U.horaLima(fin);
+      return `${DIAS[d.getUTCDay()]} ${f.slice(8, 10)}/${f.slice(5, 7)}, ` + (t ? `${t.nombre.toLowerCase()} (${h})` : h);
+    }
+    const avisar = (tipo, mensaje, laboratorio = null, cuando = new Date()) =>
+      avisos.push({ id: ++seq, tipo, mensaje, actor_id: yo ? yo.id : null, laboratorio, creado: new Date(cuando).toISOString() });
+    const detalleReu = g => { const p = perfiles.find(x => x.id === g.organizador_id);
+      return { ...g, organizador_nombre: p.nombre, organizador_codigo: p.codigo, asistentes: asisReu.filter(a => a.reunion_id === g.id).length }; };
     const detalleObs = o => {
       const e = equipos.find(x => x.id === o.equipo_id), p = perfiles.find(x => x.id === o.usuario_id), r = perfiles.find(x => x.id === o.resuelta_por);
       return { ...o, equipo_codigo: e ? e.codigo : null, equipo_nombre: e ? e.nombre : null, equipo_laboratorio: e ? e.laboratorio : null,
@@ -173,8 +219,10 @@
     };
     const detalle = r => {
       const e = equipos.find(x => x.id === r.equipo_id), p = perfiles.find(x => x.id === r.usuario_id);
+      const a = perfiles.find(x => x.id === r.aprobada_por), o = perfiles.find(x => x.id === r.aprobada_origen_por);
       return { ...r, equipo_codigo: e.codigo, equipo_nombre: e.nombre, equipo_laboratorio: e.laboratorio,
-               usuario_codigo: p.codigo, usuario_nombre: p.nombre, supervisor: p.supervisor };
+               usuario_codigo: p.codigo, usuario_nombre: p.nombre, supervisor: p.supervisor, usuario_laboratorio: p.laboratorio,
+               aprobada_por_nombre: a ? a.nombre : null, aprobada_origen_por_nombre: o ? o.nombre : null };
     };
 
     const turnos = TURNOS_DEF.map(t => ({ ...t }));
@@ -184,8 +232,6 @@
       if (!e) error('El equipo seleccionado no existe.');
       if (!p || !p.activo || p.rol === 'kiosco') error('Su usuario no está habilitado para reservar.');
       if (cambia && e.estado !== 'Disponible') error(`El equipo "${e.nombre}" no se puede reservar: está en ${e.estado.toLowerCase()}.`);
-      if (e.laboratorio && p.laboratorio !== 'AMBOS' && p.laboratorio !== e.laboratorio && !esAdmin())
-        error(`El equipo "${e.nombre}" pertenece a ${e.laboratorio} y usted está registrado en ${p.laboratorio}.`);
       const ini = new Date(r.inicio), fin = new Date(r.fin);
       if (fin <= ini) error('La hora de fin debe ser posterior a la de inicio.');
       if (!cambia) return;
@@ -211,7 +257,7 @@
       const c = reservas.find(x => x.id !== id && x.equipo_id === r.equipo_id && new Date(x.inicio) < fin && new Date(x.fin) > ini);
       if (c && c.usuario_id === p.id) error(`Usted ya tiene reservado "${e.nombre}" en ese turno.`);
       if (c) { const q = perfiles.find(x => x.id === c.usuario_id);
-        error(`Turno ocupado: ${q.nombre}${q.supervisor ? ' (' + q.supervisor + ')' : ''} ya reservó "${e.nombre}" de ${U.horaLima(c.inicio)} a ${U.horaLima(c.fin)}.`); }
+        error(`Turno ocupado: ${q.nombre}${q.supervisor ? ' (' + q.supervisor + ')' : ''} ${c.estado === 'Pendiente' ? 'ya solicitó' : 'ya reservó'} "${e.nombre}" de ${U.horaLima(c.inicio)} a ${U.horaLima(c.fin)}.`); }
     }
 
     // Reservas de ejemplo para hoy y los próximos días
@@ -227,12 +273,12 @@
         equipos.forEach((e, i) => {
           turnos.forEach((t, j) => {
             if ((i * 3 + j + d * 2 + 14) % 5 > 1) return;
-            const us = usuarios.filter(u => u.rol !== 'admin' && (!e.laboratorio || u.laboratorio === 'AMBOS' || u.laboratorio === e.laboratorio));
+            const us = usuarios.filter(u => u.rol === 'usuario' && (!e.laboratorio || u.laboratorio === 'AMBOS' || u.laboratorio === e.laboratorio));
             const u = us[(k++) % us.length]; if (!u) return;
             const clave = u.id + ':' + e.id + ':' + (d < 0 ? 'a' : 'b');
             if (usadas[clave]) return; usadas[clave] = 1;
             const ini = U.enLima(f, t.inicio);
-            reservas.push({ id: ++seq, equipo_id: e.id, usuario_id: u.id, inicio: ini.toISOString(),
+            reservas.push({ id: ++seq, equipo_id: e.id, usuario_id: u.id, inicio: ini.toISOString(), estado: 'Confirmada',
               fin: U.enLima(f, t.fin).toISOString(), uso: usos[k % usos.length], creado: new Date().toISOString() });
           });
         });
@@ -250,6 +296,42 @@
           if (sal < new Date()) asistencia.push({ id: ++seq, usuario_id: u.id, laboratorio: lab, tipo: 'salida', momento: sal.toISOString() });
         });
       }
+      // Una solicitud entre laboratorios, avisos y reuniones de ejemplo
+      const deLab2 = usuarios.filter(u => u.laboratorio === 'LAB2' && u.rol === 'usuario');
+      const eqL1 = equipos.find(e => e.laboratorio === 'LAB1');
+      const pide = deLab2[1] || deLab2[0];
+      if (pide && eqL1) {
+        for (let d = 1; d <= 6; d++) {
+          const f = U.sumarDias(hoy, d); if (f > U.sumarDias(dom, 6)) break;
+          const t = turnos[2], ini = U.enLima(f, t.inicio), fin = U.enLima(f, t.fin);
+          if (reservas.some(x => x.equipo_id === eqL1.id && new Date(x.inicio) < fin && new Date(x.fin) > ini)) continue;
+          reservas.push({ id: ++seq, equipo_id: eqL1.id, usuario_id: pide.id, inicio: ini.toISOString(), fin: fin.toISOString(), estado: 'Pendiente',
+            uso: 'Comparar con las medidas del Lab 2', creado: new Date().toISOString() });
+          avisos.push({ id: ++seq, tipo: 'solicitud', laboratorio: 'LAB1', actor_id: pide.id, creado: new Date(Date.now() - 2 * 3600e3).toISOString(),
+            mensaje: `${pide.nombre} (LAB2) solicita "${eqL1.nombre}" del LAB1 para el ${descHorario(ini, fin)}. Uso: Comparar con las medidas del Lab 2` });
+          break;
+        }
+      }
+      const org = usuarios.find(u => u.rol === 'usuario') || usuarios[0];
+      const ahora = Date.now(), redondeo = 15 * 60e3;
+      const r1 = { id: ++seq, organizador_id: org.id, inicio: new Date(Math.floor((ahora - 20 * 60e3) / redondeo) * redondeo).toISOString(), tema: 'Avance de tesis y revisión de resultados', lugar: 'Laboratorio 2', creado: new Date(ahora - 86400e3).toISOString() };
+      r1.fin = new Date(new Date(r1.inicio).getTime() + 90 * 60e3).toISOString();
+      const fR2 = U.sumarDias(hoy, 3);
+      const r2 = { id: ++seq, organizador_id: (usuarios[3] || org).id, inicio: U.enLima(fR2, '16:00').toISOString(), fin: U.enLima(fR2, '17:30').toISOString(), tema: 'Seminario: técnicas de impedancia', lugar: 'Sala de reuniones', creado: new Date(ahora - 5 * 3600e3).toISOString() };
+      const fR0 = U.sumarDias(hoy, -6);
+      const r0 = { id: ++seq, organizador_id: org.id, inicio: U.enLima(fR0, '15:00').toISOString(), fin: U.enLima(fR0, '16:00').toISOString(), tema: 'Planificación del mes', lugar: 'Laboratorio 1', creado: new Date(ahora - 9 * 86400e3).toISOString() };
+      reuniones.push(r0, r1, r2);
+      usuarios.slice(0, 6).forEach((u, i) => asisReu.push({ reunion_id: r0.id, usuario_id: u.id, momento: new Date(new Date(r0.inicio).getTime() + i * 60e3).toISOString() }));
+      usuarios.slice(1, 3).forEach((u, i) => asisReu.push({ reunion_id: r1.id, usuario_id: u.id, momento: new Date(new Date(r1.inicio).getTime() + i * 90e3).toISOString() }));
+      const pn = id => perfiles.find(x => x.id === id).nombre;
+      avisos.push({ id: ++seq, tipo: 'reunion', mensaje: `${pn(r2.organizador_id)} programó una reunión de grupo: "${r2.tema}", el ${descHorario(r2.inicio, r2.fin)} en ${r2.lugar}.`, creado: r2.creado },
+        { id: ++seq, tipo: 'reunion', mensaje: `${pn(r1.organizador_id)} programó una reunión de grupo: "${r1.tema}", el ${descHorario(r1.inicio, r1.fin)} en ${r1.lugar}.`, creado: r1.creado });
+      const rc = reservas.find(x => x.usuario_id !== org.id && new Date(x.inicio) > new Date());
+      if (rc) { const e = equipos.find(x => x.id === rc.equipo_id), u = perfiles.find(x => x.id === rc.usuario_id);
+        avisos.push({ id: ++seq, tipo: 'cancelacion', laboratorio: e.laboratorio, creado: new Date(ahora - 3 * 3600e3).toISOString(),
+          mensaje: `${u.nombre} canceló su reserva de "${e.nombre}" del ${descHorario(rc.inicio, rc.fin)}. Ese turno quedó libre.` });
+        reservas = reservas.filter(x => x.id !== rc.id); }
+
       // Observaciones de ejemplo
       const u1 = usuarios[1] || usuarios[0], u2 = usuarios[2] || usuarios[0], adm = perfiles.find(p => p.rol === 'admin');
       const hace = h => new Date(Date.now() - h * 3600e3).toISOString();
@@ -259,6 +341,16 @@
         { id: ++seq, equipo_id: equipos[4] ? equipos[4].id : equipos[0].id, usuario_id: u2.id, texto: 'El software no reconoce el equipo al encenderlo.', estado: 'Resuelta', creado: hace(96),
           resuelta_por: adm ? adm.id : null, resuelta_en: hace(70), nota_resolucion: 'Se reinstaló el driver USB.' });
     })();
+
+    function validarReunion(n, cambiaHora = true) {
+      if (n.tema.length < 3) error('Escriba el tema de la reunión.');
+      if (!cambiaHora) return;
+      if (new Date(n.fin) <= new Date(n.inicio)) error('La hora de fin debe ser posterior a la de inicio.');
+      if (new Date(n.inicio) < new Date()) error('No se puede programar una reunión en un horario que ya pasó.');
+      if (new Date(n.fin) - new Date(n.inicio) > 6 * 3600e3) error('Una reunión puede durar como máximo 6 horas.');
+      const c = reuniones.find(g => g.id !== n.id && new Date(g.inicio) < new Date(n.fin) && new Date(g.fin) > new Date(n.inicio));
+      if (c) error(`Ya hay una reunión ese horario: "${c.tema}" (${U.horaLima(c.inicio)} a ${U.horaLima(c.fin)}).`);
+    }
 
     function token(lab, v) { let h = 2166136261; const s = 'demo:' + lab + ':' + v; for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return ('0000000000' + (h >>> 0).toString(16).toUpperCase()).slice(-10); }
     const ventana = () => Math.floor(Date.now() / 60000);
@@ -284,11 +376,16 @@
           .sort((a, b) => a.inicio.localeCompare(b.inicio)).map(detalle));
       },
       async crearReserva(r) {
-        if (!yo || !['usuario', 'admin'].includes(yo.rol)) error('No tiene permiso para esta acción.');
+        if (!yo || !['usuario', 'encargado', 'admin'].includes(yo.rol)) error('No tiene permiso para esta acción.');
         if (!r.uso || r.uso.trim().length < 5) error('Describa el uso del equipo (mínimo 5 caracteres).');
         const n = { equipo_id: r.equipo_id, usuario_id: yo.id, inicio: r.inicio.toISOString(), fin: r.fin.toISOString(), uso: r.uso.trim() };
         validar(n, null, true);
-        n.id = ++seq; n.creado = new Date().toISOString(); reservas.push(n); return espera(n);
+        const e = equipos.find(x => x.id === n.equipo_id);
+        n.estado = otroLab(e, yo) ? 'Pendiente' : 'Confirmada';
+        if (n.estado === 'Pendiente' && ['encargado', 'admin'].includes(yo.rol)) { n.aprobada_origen_por = yo.id; n.aprobada_origen_en = n.creado = new Date().toISOString(); }
+        n.id = ++seq; n.creado = new Date().toISOString(); reservas.push(n);
+        if (n.estado === 'Pendiente') avisar('solicitud', `${yo.nombre} (${yo.laboratorio}) solicita "${e.nombre}" del ${e.laboratorio} para el ${descHorario(n.inicio, n.fin)}. Uso: ${n.uso}`, e.laboratorio);
+        return espera(n);
       },
       async actualizarReserva(id, r) {
         const x = reservas.find(z => z.id === id); if (!x) error('La reserva no existe.');
@@ -296,14 +393,122 @@
         const n = { ...x, ...(r.inicio && { inicio: r.inicio.toISOString() }), ...(r.fin && { fin: r.fin.toISOString() }),
           ...(r.uso !== undefined && { uso: r.uso.trim() }), ...(r.equipo_id && { equipo_id: r.equipo_id }) };
         if (n.uso.length < 5) error('Describa el uso del equipo (mínimo 5 caracteres).');
-        validar(n, id, n.inicio !== x.inicio || n.fin !== x.fin || n.equipo_id !== x.equipo_id);
+        const cambia = n.inicio !== x.inicio || n.fin !== x.fin || n.equipo_id !== x.equipo_id;
+        if (cambia && !esAdmin() && x.estado === 'Confirmada' && new Date(x.inicio) - Date.now() < 24 * 3600e3)
+          error('Solo se puede cambiar el turno hasta 24 horas antes del inicio de la reserva.');
+        validar(n, id, cambia);
+        if (cambia) {
+          const e = equipos.find(z => z.id === n.equipo_id), e0 = equipos.find(z => z.id === x.equipo_id), p = perfiles.find(z => z.id === x.usuario_id);
+          n.estado = otroLab(e, p) ? 'Pendiente' : 'Confirmada'; n.aprobada_por = null; n.aprobada_en = null;
+          n.aprobada_origen_por = n.estado === 'Pendiente' && ['encargado', 'admin'].includes(p.rol) ? p.id : null;
+          if (n.estado === 'Pendiente') avisar('solicitud', `${p.nombre} (${p.laboratorio}) solicita "${e.nombre}" del ${e.laboratorio} para el ${descHorario(n.inicio, n.fin)}. Uso: ${n.uso}`, e.laboratorio);
+          else avisar('cambio', `${p.nombre} cambió su reserva de "${e0.nombre}" del ${descHorario(x.inicio, x.fin)}. Ese turno quedó libre.`, e0.laboratorio);
+        }
         Object.assign(x, n); return espera(x);
       },
       async cancelarReserva(id) {
         const x = reservas.find(z => z.id === id);
-        if (!x || !(esAdmin() || (x.usuario_id === yo.id && new Date(x.fin) > new Date())))
-          error('No se pudo cancelar: la reserva ya pasó o no le pertenece.');
+        if (!x) error('La reserva ya no existe.');
+        if (x.usuario_id !== yo.id && !esAdmin()) error('Solo puede cancelar sus propias reservas.');
+        const limite = new Date(new Date(x.inicio).getTime() - 24 * 3600e3);
+        if (!esAdmin() && x.estado === 'Confirmada' && Date.now() > limite)
+          error(`Ya no se puede cancelar: el plazo vence 24 horas antes del inicio (${U.fechaLima(limite).slice(8, 10)}/${U.fechaLima(limite).slice(5, 7)} ${U.horaLima(limite)}).`);
+        const e = equipos.find(z => z.id === x.equipo_id), p = perfiles.find(z => z.id === x.usuario_id);
         reservas = reservas.filter(z => z.id !== id);
+        if (new Date(x.fin) > new Date()) avisar('cancelacion', x.usuario_id === yo.id
+          ? `${p.nombre} ${x.estado === 'Pendiente' ? 'retiró su solicitud' : 'canceló su reserva'} de "${e.nombre}" del ${descHorario(x.inicio, x.fin)}. Ese turno quedó libre.`
+          : `${yo.nombre} canceló la reserva de ${p.nombre} de "${e.nombre}" del ${descHorario(x.inicio, x.fin)}. Ese turno quedó libre.`, e.laboratorio);
+        return espera(true);
+      },
+      async resolverSolicitud(id, aprobar, motivo) {
+        const x = reservas.find(z => z.id === id);
+        if (!x || x.estado !== 'Pendiente') error('La solicitud ya fue resuelta o retirada.');
+        const e = equipos.find(z => z.id === x.equipo_id), p = perfiles.find(z => z.id === x.usuario_id);
+        if (!puedeAprobar(e.laboratorio) && !puedeAprobar(p.laboratorio)) error(`Solo un encargado o administrador de ${e.laboratorio} o de ${p.laboratorio} puede resolver esta solicitud.`);
+        if (!aprobar) {
+          reservas = reservas.filter(z => z.id !== id);
+          avisar('rechazada', `${yo.nombre} rechazó la solicitud de ${p.nombre}: "${e.nombre}" el ${descHorario(x.inicio, x.fin)}.${motivo ? ' Motivo: ' + motivo : ''}`, e.laboratorio);
+          return espera(true);
+        }
+        const ladoEq = !x.aprobada_por && puedeAprobar(e.laboratorio), ladoOr = !x.aprobada_origen_por && puedeAprobar(p.laboratorio);
+        if (!ladoEq && !ladoOr) error(`Su laboratorio ya aprobó esta solicitud. Falta la aprobación del ${!x.aprobada_por ? e.laboratorio : p.laboratorio}.`);
+        const t = new Date().toISOString();
+        if (ladoEq) { x.aprobada_por = yo.id; x.aprobada_en = t; }
+        if (ladoOr) { x.aprobada_origen_por = yo.id; x.aprobada_origen_en = t; }
+        if (x.aprobada_por && x.aprobada_origen_por) {
+          x.estado = 'Confirmada';
+          avisar('aprobada', `${yo.nombre} aprobó la solicitud de ${p.nombre}: "${e.nombre}" el ${descHorario(x.inicio, x.fin)}. Con la aprobación de ambos laboratorios, la reserva queda confirmada.`, e.laboratorio);
+        } else {
+          avisar('aprobada', `${yo.nombre} aprobó, por el ${ladoEq ? e.laboratorio : p.laboratorio}, la solicitud de ${p.nombre}: "${e.nombre}" el ${descHorario(x.inicio, x.fin)}. Falta la aprobación del ${!x.aprobada_por ? e.laboratorio : p.laboratorio}.`, e.laboratorio);
+        }
+        return espera(true);
+      },
+      async solicitudesPendientes() {
+        return espera(reservas.filter(x => x.estado === 'Pendiente' && new Date(x.fin) > new Date()).sort((a, b) => a.inicio.localeCompare(b.inicio)).map(detalle));
+      },
+      async avisos(limite = 150) {
+        if (!yo || yo.rol === 'kiosco') return [];
+        return espera(avisos.slice().sort((a, b) => b.creado.localeCompare(a.creado)).slice(0, limite));
+      },
+      async avisosNuevos(desde) { return avisos.filter(a => a.creado > desde).length; },
+      async marcarAvisosVistos() { if (yo) yo.avisos_vistos = new Date().toISOString(); },
+      async reuniones(desde, hasta) {
+        return espera(reuniones.filter(g => (!desde || new Date(g.fin) >= desde) && (!hasta || new Date(g.inicio) < hasta))
+          .sort((a, b) => a.inicio.localeCompare(b.inicio)).map(detalleReu));
+      },
+      async crearReunion(g) {
+        if (!yo || !['usuario', 'encargado', 'admin'].includes(yo.rol)) error('Su usuario no puede programar reuniones.');
+        const n = { id: ++seq, organizador_id: yo.id, inicio: g.inicio.toISOString(), fin: g.fin.toISOString(), tema: (g.tema || '').trim(), lugar: (g.lugar || '').trim() || null, creado: new Date().toISOString() };
+        validarReunion(n);
+        reuniones.push(n);
+        avisar('reunion', `${yo.nombre} programó una reunión de grupo: "${n.tema}", el ${descHorario(n.inicio, n.fin)}${n.lugar ? ' en ' + n.lugar : ''}.`);
+        return espera(n);
+      },
+      async actualizarReunion(id, g) {
+        const x = reuniones.find(z => z.id === id);
+        if (!x || (x.organizador_id !== yo.id && !esAdmin())) error('Solo quien organizó la reunión o un administrador puede modificarla.');
+        const n = { ...x, inicio: g.inicio.toISOString(), fin: g.fin.toISOString(), tema: (g.tema || '').trim(), lugar: (g.lugar || '').trim() || null };
+        const cambiaHora = n.inicio !== x.inicio || n.fin !== x.fin;
+        validarReunion(n, cambiaHora);
+        if (cambiaHora || n.lugar !== x.lugar) avisar('reunion', `${yo.nombre} cambió la reunión "${n.tema}": ahora es el ${descHorario(n.inicio, n.fin)}${n.lugar ? ' en ' + n.lugar : ''}.`);
+        Object.assign(x, n); return espera(x);
+      },
+      async cancelarReunion(id) {
+        const x = reuniones.find(z => z.id === id);
+        if (!x || !(esAdmin() || (x.organizador_id === yo.id && new Date(x.fin) > new Date())))
+          error('Solo quien organizó la reunión o un administrador puede cancelarla, y antes de que termine.');
+        reuniones = reuniones.filter(z => z.id !== id); asisReu = asisReu.filter(a => a.reunion_id !== id);
+        if (new Date(x.fin) > new Date()) avisar('reunion_cancelada', `${yo.nombre} canceló la reunión "${x.tema}" del ${descHorario(x.inicio, x.fin)}.`);
+        return espera(true);
+      },
+      async qrReunionToken(id) {
+        const g = reuniones.find(z => z.id === id); if (!g) error('La reunión no existe.');
+        if (g.organizador_id !== yo.id && !esAdmin()) error('Solo quien organizó la reunión o un administrador puede mostrar su QR.');
+        const act = new Date(new Date(g.inicio).getTime() - 15 * 60e3);
+        if (new Date() < act) error(`El QR se activa 15 minutos antes del inicio (a las ${U.horaLima(act)}).`);
+        if (new Date() > new Date(g.fin)) error('La reunión ya terminó.');
+        const v = ventana();
+        return { token: token('R' + id, v), renueva: new Date((v + 1) * 60000).toISOString(), ahora: new Date().toISOString() };
+      },
+      async marcarReunion(id, tok) {
+        if (!yo || yo.rol === 'kiosco') error('Su usuario no está habilitado.');
+        const g = reuniones.find(z => z.id === id); if (!g) error('La reunión no existe.');
+        const t = Date.now();
+        if (t < new Date(g.inicio) - 15 * 60e3 || t > new Date(g.fin).getTime() + 5 * 60e3)
+          error(`La asistencia de esta reunión solo se registra durante su horario (${U.horaLima(g.inicio)} a ${U.horaLima(g.fin)}).`);
+        const v = ventana();
+        if (![0, 1, 2, 3, 4, 5].some(i => token('R' + id, v - i) === String(tok).toUpperCase()))
+          error('El código QR caducó. Escanee nuevamente el código que se muestra en la reunión.');
+        const ya = asisReu.find(a => a.reunion_id === id && a.usuario_id === yo.id);
+        if (ya) return { tema: g.tema, momento: ya.momento, nombre: yo.nombre, repetido: true };
+        const a = { reunion_id: id, usuario_id: yo.id, momento: new Date().toISOString() }; asisReu.push(a);
+        return espera({ tema: g.tema, momento: a.momento, nombre: yo.nombre, repetido: false });
+      },
+      async asistenciaReunion(ids) {
+        return espera(asisReu.filter(a => ids.includes(a.reunion_id)).sort((a, b) => a.momento.localeCompare(b.momento)).map(a => {
+          const p = perfiles.find(x => x.id === a.usuario_id);
+          return { ...a, codigo: p.codigo, nombre: p.nombre, supervisor: p.supervisor, laboratorio: p.laboratorio };
+        }));
       },
       async presentes() {
         const hoy = U.fechaLima(), ult = {};
